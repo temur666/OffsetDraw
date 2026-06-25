@@ -181,8 +181,18 @@ final class DrawingCanvasView: UIView {
 
     private func appendPoint(_ point: CGPoint) {
         let stabilizedPoint = stabilizedTipPosition(for: point)
+        let previousTipPosition = cursorPosition ?? stabilizedPoint
         targetPosition = point
+        guard previousTipPosition != stabilizedPoint else {
+            return
+        }
+
+        if activePoints.isEmpty {
+            activePoints.append(StrokePoint(position: previousTipPosition, timestamp: CACurrentMediaTime()))
+        }
+
         guard activePoints.last?.position != stabilizedPoint else {
+            cursorPosition = stabilizedPoint
             return
         }
 
@@ -232,14 +242,14 @@ final class DrawingCanvasView: UIView {
     }
 
     private func beginDrawing() {
-        guard drawingMode == .waitingLongPress, let cursorPosition else {
+        guard drawingMode == .waitingLongPress else {
             return
         }
 
         longPressTimer?.invalidate()
         longPressTimer = nil
         drawingMode = .drawing
-        activePoints = [StrokePoint(position: cursorPosition, timestamp: CACurrentMediaTime())]
+        activePoints.removeAll()
         setNeedsDisplay()
     }
 
