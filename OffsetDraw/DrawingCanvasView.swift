@@ -11,12 +11,12 @@ final class DrawingCanvasView: UIView {
     private var activePoints: [StrokePoint] = []
     private var cursorPosition: CGPoint?
     private var targetPosition: CGPoint?
+    private var touchToTipOffset: CGPoint?
     private var touchStartPosition: CGPoint?
     private var longPressStartTime: TimeInterval?
     private var longPressTimer: Timer?
     private var drawingMode = DrawingMode.idle
-    private let tipOffset = CGPoint(x: 0, y: -72)
-    private let longPressDuration: TimeInterval = 0.5
+    private let longPressDuration: TimeInterval = 0.3
     private let longPressMovementTolerance: CGFloat = 8
 
     private enum DrawingMode {
@@ -88,15 +88,25 @@ final class DrawingCanvasView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let point = drawingPoint(from: touches.first) else {
+        guard let touch = touches.first else {
             return
         }
 
         ensureCursorPosition()
         resetLongPressState(keepCursor: true)
+        guard let cursorPosition else {
+            return
+        }
+
+        let touchPoint = touch.location(in: self)
+        touchToTipOffset = CGPoint(
+            x: cursorPosition.x - touchPoint.x,
+            y: cursorPosition.y - touchPoint.y
+        )
+
         activePoints.removeAll()
-        targetPosition = point
-        touchStartPosition = point
+        targetPosition = cursorPosition
+        touchStartPosition = cursorPosition
         longPressStartTime = CACurrentMediaTime()
         drawingMode = .waitingLongPress
         startLongPressTimer()
@@ -118,7 +128,7 @@ final class DrawingCanvasView: UIView {
             case .waitingLongPress:
                 moveCursor(to: point)
                 if hasMovedBeyondLongPressTolerance(to: point) {
-                    cancelLongPress(keepCursor: true)
+                    cancelLongPress(keepCursor: true, keepTouchOffset: true)
                     drawingMode = .hoveringTip
                 }
             case .hoveringTip:
@@ -155,7 +165,14 @@ final class DrawingCanvasView: UIView {
         }
 
         let touchPoint = touch.location(in: self)
-        return CGPoint(x: touchPoint.x + tipOffset.x, y: touchPoint.y + tipOffset.y)
+        guard let touchToTipOffset else {
+            return touchPoint
+        }
+
+        return CGPoint(
+            x: touchPoint.x + touchToTipOffset.x,
+            y: touchPoint.y + touchToTipOffset.y
+        )
     }
 
     private func stabilizedTipPosition(for targetPoint: CGPoint) -> CGPoint {
@@ -253,11 +270,14 @@ final class DrawingCanvasView: UIView {
         setNeedsDisplay()
     }
 
-    private func cancelLongPress(keepCursor: Bool) {
+    private func cancelLongPress(keepCursor: Bool, keepTouchOffset: Bool = false) {
         longPressTimer?.invalidate()
         longPressTimer = nil
         longPressStartTime = nil
         touchStartPosition = nil
+        if !keepTouchOffset {
+            touchToTipOffset = nil
+        }
         activePoints.removeAll()
         if !keepCursor {
             cursorPosition = nil
@@ -342,7 +362,7 @@ final class DrawingCanvasView: UIView {
     private func drawCursor(at point: CGPoint, in context: CGContext) {
         context.saveGState()
 
-        let pencilAngle = -CGFloat.pi / 4
+        let pencilAngle = CGFloat.pi * 3 / 4
         let pencilLength: CGFloat = 46
         let pencilWidth: CGFloat = 12
         let axis = CGPoint(x: cos(pencilAngle), y: sin(pencilAngle))
