@@ -8,6 +8,8 @@ final class ViewController: UIViewController {
     private let exportButton = UIButton(type: .system)
     private let widthSlider = UISlider()
     private let widthValueLabel = UILabel()
+    private let stabilizerSlider = UISlider()
+    private let stabilizerValueLabel = UILabel()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -36,17 +38,36 @@ final class ViewController: UIViewController {
         toolbar.clipsToBounds = true
         view.addSubview(toolbar)
 
-        let stack = UIStackView(arrangedSubviews: [
+        let buttonStack = UIStackView(arrangedSubviews: [
             undoButton,
             clearButton,
-            exportButton,
+            exportButton
+        ])
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.axis = .horizontal
+        buttonStack.alignment = .center
+        buttonStack.distribution = .equalSpacing
+        buttonStack.spacing = 12
+
+        let controlStack = UIStackView(arrangedSubviews: [
             widthSlider,
-            widthValueLabel
+            widthValueLabel,
+            stabilizerSlider,
+            stabilizerValueLabel
+        ])
+        controlStack.translatesAutoresizingMaskIntoConstraints = false
+        controlStack.axis = .horizontal
+        controlStack.alignment = .center
+        controlStack.spacing = 10
+
+        let stack = UIStackView(arrangedSubviews: [
+            buttonStack,
+            controlStack
         ])
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.alignment = .center
-        stack.spacing = 12
+        stack.axis = .vertical
+        stack.alignment = .fill
+        stack.spacing = 8
         toolbar.contentView.addSubview(stack)
 
         configureButton(undoButton, title: "Undo", action: #selector(undoTapped))
@@ -64,6 +85,18 @@ final class ViewController: UIViewController {
         widthValueLabel.textAlignment = .right
         widthValueLabel.widthAnchor.constraint(equalToConstant: 36).isActive = true
         updateWidthLabel()
+
+        stabilizerSlider.minimumValue = 0
+        stabilizerSlider.maximumValue = 120
+        stabilizerSlider.value = Float(canvasView.brush.stabilizerRadius)
+        stabilizerSlider.widthAnchor.constraint(equalToConstant: 112).isActive = true
+        stabilizerSlider.addTarget(self, action: #selector(stabilizerChanged), for: .valueChanged)
+
+        stabilizerValueLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        stabilizerValueLabel.textColor = .label
+        stabilizerValueLabel.textAlignment = .right
+        stabilizerValueLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        updateStabilizerLabel()
 
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
@@ -85,6 +118,10 @@ final class ViewController: UIViewController {
 
     private func updateWidthLabel() {
         widthValueLabel.text = "\(Int(round(widthSlider.value)))pt"
+    }
+
+    private func updateStabilizerLabel() {
+        stabilizerValueLabel.text = "\(Int(round(stabilizerSlider.value)))pt"
     }
 
     @objc private func undoTapped() {
@@ -115,6 +152,11 @@ final class ViewController: UIViewController {
     @objc private func widthChanged() {
         canvasView.brush.lineWidth = CGFloat(widthSlider.value)
         updateWidthLabel()
+    }
+
+    @objc private func stabilizerChanged() {
+        canvasView.brush.stabilizerRadius = CGFloat(stabilizerSlider.value)
+        updateStabilizerLabel()
     }
 
     private func presentMessage(_ message: String) {

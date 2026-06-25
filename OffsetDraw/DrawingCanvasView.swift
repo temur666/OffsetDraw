@@ -10,7 +10,21 @@ final class DrawingCanvasView: UIView {
     private(set) var strokes: [Stroke] = []
     private var activePoints: [StrokePoint] = []
     private var cursorPosition: CGPoint?
+    private var targetPosition: CGPoint?
+    private var touchStartPosition: CGPoint?
+    private var longPressStartTime: TimeInterval?
+    private var longPressTimer: Timer?
+    private var drawingMode = DrawingMode.idle
     private let tipOffset = CGPoint(x: 0, y: -72)
+    private let longPressDuration: TimeInterval = 0.5
+    private let longPressMovementTolerance: CGFloat = 8
+
+    private enum DrawingMode {
+        case idle
+        case waitingLongPress
+        case hoveringTip
+        case drawing
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -34,7 +48,7 @@ final class DrawingCanvasView: UIView {
     func clearDrawing() {
         strokes.removeAll()
         activePoints.removeAll()
-        cursorPosition = nil
+        resetLongPressState(keepCursor: true)
         setNeedsDisplay()
     }
 
@@ -55,12 +69,17 @@ final class DrawingCanvasView: UIView {
             return
         }
 
+        ensureCursorPosition()
         UIColor.white.setFill()
         context.fill(rect)
         drawStrokes(strokes, in: context)
 
         if !activePoints.isEmpty {
             drawStroke(Stroke(points: activePoints, brush: brush), in: context)
+        }
+
+        if let cursorPosition, let targetPosition {
+            drawStabilizerLine(from: cursorPosition, to: targetPosition, in: context)
         }
 
         if let cursorPosition {
@@ -73,8 +92,14 @@ final class DrawingCanvasView: UIView {
             return
         }
 
-        activePoints = [StrokePoint(position: point, timestamp: CACurrentMediaTime())]
-        cursorPosition = point
+        ensureCursorPosition()
+        resetLongPressState(keepCursor: true)
+        activePoints.removeAll()
+        targetPosition = point
+        touchStartPosition = point
+        longPressStartTime = CACurrentMediaTime()
+        drawingMode = .waitingLongPress
+        startLongPressTimer()
         setNeedsDisplay()
     }
 
@@ -88,7 +113,21 @@ final class DrawingCanvasView: UIView {
             guard let point = drawingPoint(from: sample) else {
                 continue
             }
-            appendPoint(point)
+
+            switch drawingMode {
+            case .waitingLongPress:
+                moveCursor(to: point)
+                if hasMovedBeyondLongPressTolerance(to: point) {
+                    cancelLongPress(keepCursor: true)
+                    drawingMode = .hoveringTip
+                }
+            case .hoveringTip:
+                moveCursor(to: point)
+            case .drawing:
+                appendPoint(point)
+            case .idle:
+                moveCursor(to: point)
+            }
         }
 
         setNeedsDisplay()
@@ -100,7 +139,7 @@ final class DrawingCanvasView: UIView {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         activePoints.removeAll()
-        cursorPosition = nil
+        resetLongPressState(keepCursor: true)
         setNeedsDisplay()
     }
 
@@ -119,33 +158,125 @@ final class DrawingCanvasView: UIView {
         return CGPoint(x: touchPoint.x + tipOffset.x, y: touchPoint.y + tipOffset.y)
     }
 
+    private func stabilizedTipPosition(for targetPoint: CGPoint) -> CGPoint {
+        let radius = max(brush.stabilizerRadius, 0)
+        guard radius > 0, let cursorPosition else {
+            return targetPoint
+        }
+
+        let xDistance = targetPoint.x - cursorPosition.x
+        let yDistance = targetPoint.y - cursorPosition.y
+        let distance = hypot(xDistance, yDistance)
+        guard distance > radius else {
+            return cursorPosition
+        }
+
+        let pullDistance = distance - radius
+        let pullRatio = pullDistance / distance
+        return CGPoint(
+            x: cursorPosition.x + xDistance * pullRatio,
+            y: cursorPosition.y + yDistance * pullRatio
+        )
+    }
+
     private func appendPoint(_ point: CGPoint) {
-        guard activePoints.last?.position != point else {
+        let stabilizedPoint = stabilizedTipPosition(for: point)
+        targetPosition = point
+        guard activePoints.last?.position != stabilizedPoint else {
             return
         }
 
-        let smoothedPoint: CGPoint
-        if let previous = activePoints.last?.position {
-            smoothedPoint = CGPoint(
-                x: previous.x * 0.35 + point.x * 0.65,
-                y: previous.y * 0.35 + point.y * 0.65
-            )
-        } else {
-            smoothedPoint = point
-        }
+        activePoints.append(StrokePoint(position: stabilizedPoint, timestamp: CACurrentMediaTime()))
+        cursorPosition = stabilizedPoint
+    }
 
-        activePoints.append(StrokePoint(position: smoothedPoint, timestamp: CACurrentMediaTime()))
-        cursorPosition = smoothedPoint
+    private func moveCursor(to targetPoint: CGPoint) {
+        targetPosition = targetPoint
+        cursorPosition = stabilizedTipPosition(for: targetPoint)
     }
 
     private func finishActiveStroke() {
-        if !activePoints.isEmpty {
+        if drawingMode == .drawing && !activePoints.isEmpty {
             strokes.append(Stroke(points: activePoints, brush: brush))
         }
 
         activePoints.removeAll()
-        cursorPosition = nil
+        resetLongPressState(keepCursor: true)
         setNeedsDisplay()
+    }
+
+    private func ensureCursorPosition() {
+        if cursorPosition == nil {
+            cursorPosition = CGPoint(x: bounds.midX, y: bounds.midY - 48)
+        }
+    }
+
+    private func startLongPressTimer() {
+        longPressTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+
+            guard drawingMode == .waitingLongPress else {
+                timer.invalidate()
+                return
+            }
+
+            if longPressProgress >= 1 {
+                beginDrawing()
+            }
+
+            setNeedsDisplay()
+        }
+    }
+
+    private func beginDrawing() {
+        guard drawingMode == .waitingLongPress, let cursorPosition else {
+            return
+        }
+
+        longPressTimer?.invalidate()
+        longPressTimer = nil
+        drawingMode = .drawing
+        activePoints = [StrokePoint(position: cursorPosition, timestamp: CACurrentMediaTime())]
+        setNeedsDisplay()
+    }
+
+    private func cancelLongPress(keepCursor: Bool) {
+        longPressTimer?.invalidate()
+        longPressTimer = nil
+        longPressStartTime = nil
+        touchStartPosition = nil
+        activePoints.removeAll()
+        if !keepCursor {
+            cursorPosition = nil
+            targetPosition = nil
+        }
+    }
+
+    private func resetLongPressState(keepCursor: Bool) {
+        cancelLongPress(keepCursor: keepCursor)
+        drawingMode = .idle
+    }
+
+    private var longPressProgress: CGFloat {
+        guard drawingMode == .waitingLongPress, let longPressStartTime else {
+            return 0
+        }
+
+        let elapsed = CACurrentMediaTime() - longPressStartTime
+        return min(max(CGFloat(elapsed / longPressDuration), 0), 1)
+    }
+
+    private func hasMovedBeyondLongPressTolerance(to point: CGPoint) -> Bool {
+        guard let touchStartPosition else {
+            return false
+        }
+
+        let xDistance = point.x - touchStartPosition.x
+        let yDistance = point.y - touchStartPosition.y
+        return hypot(xDistance, yDistance) > longPressMovementTolerance
     }
 
     private func drawStrokes(_ strokes: [Stroke], in context: CGContext) {
@@ -200,14 +331,102 @@ final class DrawingCanvasView: UIView {
 
     private func drawCursor(at point: CGPoint, in context: CGContext) {
         context.saveGState()
-        context.setStrokeColor(UIColor.systemBlue.cgColor)
-        context.setLineWidth(1.5)
-        context.strokeEllipse(in: CGRect(x: point.x - 7, y: point.y - 7, width: 14, height: 14))
-        context.move(to: CGPoint(x: point.x - 11, y: point.y))
-        context.addLine(to: CGPoint(x: point.x + 11, y: point.y))
-        context.move(to: CGPoint(x: point.x, y: point.y - 11))
-        context.addLine(to: CGPoint(x: point.x, y: point.y + 11))
-        context.strokePath()
+
+        let pencilAngle = -CGFloat.pi / 4
+        let pencilLength: CGFloat = 46
+        let pencilWidth: CGFloat = 12
+        let axis = CGPoint(x: cos(pencilAngle), y: sin(pencilAngle))
+        let normal = CGPoint(x: -axis.y, y: axis.x)
+        let tipLength: CGFloat = 12
+        let woodBase = CGPoint(
+            x: point.x - axis.x * tipLength,
+            y: point.y - axis.y * tipLength
+        )
+        let endCenter = CGPoint(
+            x: point.x - axis.x * pencilLength,
+            y: point.y - axis.y * pencilLength
+        )
+
+        let graphitePath = UIBezierPath()
+        graphitePath.move(to: point)
+        graphitePath.addLine(to: CGPoint(
+            x: woodBase.x + normal.x * pencilWidth * 0.45,
+            y: woodBase.y + normal.y * pencilWidth * 0.45
+        ))
+        graphitePath.addLine(to: CGPoint(
+            x: woodBase.x - normal.x * pencilWidth * 0.45,
+            y: woodBase.y - normal.y * pencilWidth * 0.45
+        ))
+        graphitePath.close()
+        UIColor(white: 0.16, alpha: 1).setFill()
+        graphitePath.fill()
+
+        let bodyPath = UIBezierPath()
+        bodyPath.move(to: CGPoint(
+            x: woodBase.x + normal.x * pencilWidth * 0.5,
+            y: woodBase.y + normal.y * pencilWidth * 0.5
+        ))
+        bodyPath.addLine(to: CGPoint(
+            x: endCenter.x + normal.x * pencilWidth * 0.5,
+            y: endCenter.y + normal.y * pencilWidth * 0.5
+        ))
+        bodyPath.addLine(to: CGPoint(
+            x: endCenter.x - normal.x * pencilWidth * 0.5,
+            y: endCenter.y - normal.y * pencilWidth * 0.5
+        ))
+        bodyPath.addLine(to: CGPoint(
+            x: woodBase.x - normal.x * pencilWidth * 0.5,
+            y: woodBase.y - normal.y * pencilWidth * 0.5
+        ))
+        bodyPath.close()
+        UIColor.systemYellow.setFill()
+        bodyPath.fill()
+
+        UIColor(white: 0.2, alpha: 0.9).setStroke()
+        graphitePath.lineWidth = 1
+        graphitePath.stroke()
+        bodyPath.lineWidth = 1
+        bodyPath.stroke()
+
+        if drawingMode == .waitingLongPress {
+            drawLongPressProgress(at: point, in: context)
+        }
+
         context.restoreGState()
+    }
+
+    private func drawStabilizerLine(from cursorPoint: CGPoint, to targetPoint: CGPoint, in context: CGContext) {
+        guard cursorPoint != targetPoint else {
+            return
+        }
+
+        context.saveGState()
+        context.setLineWidth(1.5)
+        context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.45).cgColor)
+        context.setLineDash(phase: 0, lengths: [5, 4])
+        context.move(to: cursorPoint)
+        context.addLine(to: targetPoint)
+        context.strokePath()
+        context.setLineDash(phase: 0, lengths: [])
+
+        context.setFillColor(UIColor.systemBlue.withAlphaComponent(0.65).cgColor)
+        context.fillEllipse(in: CGRect(x: targetPoint.x - 3, y: targetPoint.y - 3, width: 6, height: 6))
+        context.restoreGState()
+    }
+
+    private func drawLongPressProgress(at point: CGPoint, in context: CGContext) {
+        let radius: CGFloat = 18
+        let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+        let startAngle = -CGFloat.pi / 2
+        let endAngle = startAngle + CGFloat.pi * 2 * longPressProgress
+
+        context.setLineWidth(3)
+        context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.18).cgColor)
+        context.strokeEllipse(in: rect)
+
+        context.setStrokeColor(UIColor.systemBlue.cgColor)
+        context.setLineCap(.round)
+        context.addArc(center: point, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+        context.strokePath()
     }
 }

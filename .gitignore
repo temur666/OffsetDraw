@@ -1,5 +1,6 @@
 DerivedData/
 build/
+.ultra/
 *.xcuserstate
 xcuserdata/
 .DS_Store
