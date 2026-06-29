@@ -14,11 +14,10 @@ final class DrawingCanvasView: UIView {
         }
     }
 
-    var interactionMode: DrawingInteractionMode = .longPress {
+    var boardColor: UIColor = .white {
         didSet {
-            isButtonStrokeActive = false
-            finishActiveStroke()
-            resetInteractionState(keepCursor: true)
+            backgroundColor = boardColor
+            setNeedsDisplay()
         }
     }
 
@@ -35,11 +34,7 @@ final class DrawingCanvasView: UIView {
     private var drawingMode = DrawingMode.idle
     private let longPressDuration: TimeInterval = 0.18
     private let longPressMovementTolerance: CGFloat = 8
-    private let doubleTapInterval: TimeInterval = 0.28
-    private let doubleTapMovementTolerance: CGFloat = 18
-    private var lastTapTime: TimeInterval?
-    private var lastTapPosition: CGPoint?
-    private var isButtonStrokeActive = false
+    var onDocumentChanged: (() -> Void)?
 
     private enum DrawingMode {
         case idle
@@ -65,6 +60,7 @@ final class DrawingCanvasView: UIView {
 
         strokes.removeLast()
         setNeedsDisplay()
+        onDocumentChanged?()
     }
 
     func clearDrawing() {
@@ -72,6 +68,18 @@ final class DrawingCanvasView: UIView {
         activePoints.removeAll()
         smoothedDrawingPoint = nil
         resetInteractionState(keepCursor: true)
+        setNeedsDisplay()
+        onDocumentChanged?()
+    }
+
+    func load(strokes: [Stroke], brush: BrushConfig, control: DrawingControlConfig, boardColor: UIColor) {
+        self.strokes = strokes
+        self.brush = brush
+        self.control = control
+        self.boardColor = boardColor
+        activePoints.removeAll()
+        smoothedDrawingPoint = nil
+        resetInteractionState(keepCursor: false)
         setNeedsDisplay()
     }
 
@@ -81,7 +89,7 @@ final class DrawingCanvasView: UIView {
         format.opaque = true
 
         return UIGraphicsImageRenderer(bounds: bounds, format: format).image { context in
-            UIColor.white.setFill()
+            boardColor.setFill()
             context.fill(bounds)
             drawStrokes(strokes, in: context.cgContext)
         }
@@ -93,7 +101,7 @@ final class DrawingCanvasView: UIView {
         }
 
         ensureCursorPosition()
-        UIColor.white.setFill()
+        boardColor.setFill()
         context.fill(rect)
         drawStrokes(strokes, in: context)
 
@@ -177,7 +185,6 @@ final class DrawingCanvasView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        recordTapIfNeeded(touch: touches.first)
         finishActiveStroke()
     }
 
@@ -189,36 +196,9 @@ final class DrawingCanvasView: UIView {
     }
 
     private func configure() {
-        backgroundColor = .white
+        backgroundColor = boardColor
         isMultipleTouchEnabled = true
         contentMode = .redraw
-    }
-
-    func beginButtonStroke() {
-        guard interactionMode == .buttonHold else {
-            return
-        }
-
-        isButtonStrokeActive = true
-        ensureCursorPosition()
-        guard let cursorPosition else {
-            return
-        }
-
-        guard drawingMode != .drawing else {
-            return
-        }
-
-        beginDrawing(at: cursorPosition)
-    }
-
-    func endButtonStroke() {
-        guard interactionMode == .buttonHold else {
-            return
-        }
-
-        isButtonStrokeActive = false
-        finishActiveStroke()
     }
 
     private func drawingPoint(from touch: UITouch?, movementScale: CGFloat) -> CGPoint? {
@@ -310,6 +290,7 @@ final class DrawingCanvasView: UIView {
     private func finishActiveStroke() {
         if drawingMode == .drawing && !activePoints.isEmpty {
             strokes.append(Stroke(points: activePoints, brush: brush))
+            onDocumentChanged?()
         }
 
         activePoints.removeAll()
@@ -401,50 +382,9 @@ final class DrawingCanvasView: UIView {
     }
 
     private func configureTouchStart(for point: CGPoint) {
-        switch interactionMode {
-        case .longPress:
-            longPressStartTime = CACurrentMediaTime()
-            drawingMode = .waitingLongPress
-            startLongPressTimer()
-        case .buttonHold:
-            if isButtonStrokeActive {
-                beginDrawing(at: point)
-            } else {
-                drawingMode = .hoveringTip
-            }
-        case .doubleTapHold:
-            if isSecondTap(at: point) {
-                lastTapTime = nil
-                lastTapPosition = nil
-                beginDrawing(at: point)
-            } else {
-                drawingMode = .hoveringTip
-            }
-        }
-    }
-
-    private func recordTapIfNeeded(touch: UITouch?) {
-        guard interactionMode == .doubleTapHold, drawingMode != .drawing else {
-            return
-        }
-
-        guard let point = drawingPoint(from: touch, movementScale: 1) ?? cursorPosition else {
-            return
-        }
-
-        lastTapTime = CACurrentMediaTime()
-        lastTapPosition = point
-    }
-
-    private func isSecondTap(at point: CGPoint) -> Bool {
-        guard let lastTapTime, let lastTapPosition else {
-            return false
-        }
-
-        let elapsed = CACurrentMediaTime() - lastTapTime
-        let xDistance = point.x - lastTapPosition.x
-        let yDistance = point.y - lastTapPosition.y
-        return elapsed <= doubleTapInterval && hypot(xDistance, yDistance) <= doubleTapMovementTolerance
+        longPressStartTime = CACurrentMediaTime()
+        drawingMode = .waitingLongPress
+        startLongPressTimer()
     }
 
     private var longPressProgress: CGFloat {

@@ -13,7 +13,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = ViewController()
+        let store: DrawingDocumentStore
+        do {
+            store = try DrawingDocumentStore()
+        } catch {
+            return
+        }
+        window.rootViewController = UINavigationController(rootViewController: HomeViewController(store: store))
         window.makeKeyAndVisible()
         self.window = window
     }

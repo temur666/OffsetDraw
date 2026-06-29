@@ -1,13 +1,16 @@
 import UIKit
 import Photos
 
-final class ViewController: UIViewController {
+final class ViewController: UIViewController, UIColorPickerViewControllerDelegate {
+    private let store: DrawingDocumentStore
+    private var document: DrawingDocument
+    private var isPersistingDocument = false
     private let canvasView = DrawingCanvasView()
-    private let modeControl = UISegmentedControl(items: ["Long", "Button", "Double"])
-    private let drawButton = UIButton(type: .system)
     private let undoButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
     private let exportButton = UIButton(type: .system)
+    private let brushColorButton = UIButton(type: .system)
+    private let boardColorButton = UIButton(type: .system)
     private let widthSlider = UISlider()
     private let widthValueLabel = UILabel()
     private let stabilizerSlider = UISlider()
@@ -17,16 +20,31 @@ final class ViewController: UIViewController {
     private let smoothingSlider = UISlider()
     private let smoothingValueLabel = UILabel()
 
+    init(store: DrawingDocumentStore, document: DrawingDocument) {
+        self.store = store
+        self.document = document
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .white
+        title = document.title
 
         configureCanvas()
         configureToolbar()
+        loadDocument()
     }
 
     private func configureCanvas() {
         canvasView.translatesAutoresizingMaskIntoConstraints = false
+        canvasView.onDocumentChanged = { [weak self] in
+            self?.persistDocument()
+        }
         view.addSubview(canvasView)
 
         NSLayoutConstraint.activate([
@@ -45,10 +63,11 @@ final class ViewController: UIViewController {
         view.addSubview(toolbar)
 
         let buttonStack = UIStackView(arrangedSubviews: [
-            drawButton,
             undoButton,
             clearButton,
-            exportButton
+            exportButton,
+            brushColorButton,
+            boardColorButton
         ])
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         buttonStack.axis = .horizontal
@@ -85,7 +104,6 @@ final class ViewController: UIViewController {
         controlStack.spacing = 6
 
         let stack = UIStackView(arrangedSubviews: [
-            modeControl,
             buttonStack,
             controlStack
         ])
@@ -95,17 +113,11 @@ final class ViewController: UIViewController {
         stack.spacing = 8
         toolbar.contentView.addSubview(stack)
 
-        modeControl.selectedSegmentIndex = 0
-        modeControl.addTarget(self, action: #selector(modeChanged), for: .valueChanged)
-
-        configureButton(drawButton, title: "Draw", action: nil)
-        drawButton.addTarget(self, action: #selector(drawTouchDown), for: .touchDown)
-        drawButton.addTarget(self, action: #selector(drawTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-        updateDrawButtonState()
-
         configureButton(undoButton, title: "Undo", action: #selector(undoTapped))
         configureButton(clearButton, title: "Clear", action: #selector(clearTapped))
         configureButton(exportButton, title: "Export", action: #selector(exportTapped))
+        configureButton(brushColorButton, title: "Brush", action: #selector(brushColorTapped))
+        configureButton(boardColorButton, title: "Board", action: #selector(boardColorTapped))
 
         widthSlider.minimumValue = 1
         widthSlider.maximumValue = 24
@@ -196,33 +208,6 @@ final class ViewController: UIViewController {
         smoothingValueLabel.text = "\(Int(round(smoothingSlider.value * 100)))%"
     }
 
-    private func updateDrawButtonState() {
-        let isButtonMode = canvasView.interactionMode == .buttonHold
-        drawButton.isEnabled = isButtonMode
-        drawButton.alpha = isButtonMode ? 1 : 0.35
-    }
-
-    @objc private func modeChanged() {
-        switch modeControl.selectedSegmentIndex {
-        case 1:
-            canvasView.interactionMode = .buttonHold
-        case 2:
-            canvasView.interactionMode = .doubleTapHold
-        default:
-            canvasView.interactionMode = .longPress
-        }
-
-        updateDrawButtonState()
-    }
-
-    @objc private func drawTouchDown() {
-        canvasView.beginButtonStroke()
-    }
-
-    @objc private func drawTouchUp() {
-        canvasView.endButtonStroke()
-    }
-
     @objc private func undoTapped() {
         canvasView.undoLastStroke()
     }
@@ -251,21 +236,108 @@ final class ViewController: UIViewController {
     @objc private func widthChanged() {
         canvasView.brush.lineWidth = CGFloat(widthSlider.value)
         updateWidthLabel()
+        persistDocument()
     }
 
     @objc private func stabilizerChanged() {
         canvasView.brush.stabilizerRadius = CGFloat(stabilizerSlider.value)
         updateStabilizerLabel()
+        persistDocument()
     }
 
     @objc private func movementScaleChanged() {
         canvasView.control.movementScale = CGFloat(movementScaleSlider.value)
         updateMovementScaleLabel()
+        persistDocument()
     }
 
     @objc private func smoothingChanged() {
         canvasView.control.smoothingAmount = CGFloat(smoothingSlider.value)
         updateSmoothingLabel()
+        persistDocument()
+    }
+
+    @objc private func brushColorTapped() {
+        presentColorPicker(title: "Brush Color", color: canvasView.brush.color, tag: 1)
+    }
+
+    @objc private func boardColorTapped() {
+        presentColorPicker(title: "Board Color", color: canvasView.boardColor, tag: 2)
+    }
+
+    func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+        applyPickedColor(from: viewController)
+    }
+
+    func colorPickerViewControllerDidSelectColor(_ viewController: UIColorPickerViewController) {
+        applyPickedColor(from: viewController)
+    }
+
+    private func loadDocument() {
+        canvasView.load(
+            strokes: document.strokes.map(\.model),
+            brush: document.brush.model,
+            control: document.control.model,
+            boardColor: document.boardColor.uiColor
+        )
+        widthSlider.value = Float(canvasView.brush.lineWidth)
+        stabilizerSlider.value = Float(canvasView.brush.stabilizerRadius)
+        movementScaleSlider.value = Float(canvasView.control.movementScale)
+        smoothingSlider.value = Float(canvasView.control.smoothingAmount)
+        updateWidthLabel()
+        updateStabilizerLabel()
+        updateMovementScaleLabel()
+        updateSmoothingLabel()
+        updateColorButton(brushColorButton, color: canvasView.brush.color)
+        updateColorButton(boardColorButton, color: canvasView.boardColor)
+    }
+
+    private func presentColorPicker(title: String, color: UIColor, tag: Int) {
+        let picker = UIColorPickerViewController()
+        picker.title = title
+        picker.selectedColor = color
+        picker.supportsAlpha = true
+        picker.delegate = self
+        picker.view.tag = tag
+        present(picker, animated: true)
+    }
+
+    private func applyPickedColor(from picker: UIColorPickerViewController) {
+        switch picker.view.tag {
+        case 1:
+            canvasView.brush.color = picker.selectedColor
+            updateColorButton(brushColorButton, color: picker.selectedColor)
+        case 2:
+            canvasView.boardColor = picker.selectedColor
+            updateColorButton(boardColorButton, color: picker.selectedColor)
+        default:
+            return
+        }
+        persistDocument()
+    }
+
+    private func updateColorButton(_ button: UIButton, color: UIColor) {
+        button.tintColor = color
+    }
+
+    private func persistDocument() {
+        guard !isPersistingDocument else {
+            return
+        }
+
+        isPersistingDocument = true
+        document.updatedAt = Date()
+        document.boardColor = CodableColor(canvasView.boardColor)
+        document.brush = BrushConfigDTO(brush: canvasView.brush)
+        document.control = DrawingControlConfigDTO(control: canvasView.control)
+        document.strokes = canvasView.strokes.map(StrokeDTO.init(stroke:))
+
+        do {
+            try store.save(document)
+        } catch {
+            presentMessage("Could not save file.")
+        }
+        isPersistingDocument = false
     }
 
     private func presentMessage(_ message: String) {

@@ -12,6 +12,8 @@
 		1A0000030000000000000001 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000130000000000000001 /* ViewController.swift */; };
 		1A0000040000000000000001 /* DrawingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000140000000000000001 /* DrawingModels.swift */; };
 		1A0000050000000000000001 /* DrawingCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000150000000000000001 /* DrawingCanvasView.swift */; };
+		1A0000060000000000000001 /* DrawingDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000170000000000000001 /* DrawingDocumentStore.swift */; };
+		1A0000070000000000000001 /* HomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000180000000000000001 /* HomeViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +24,8 @@
 		1A0000140000000000000001 /* DrawingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingModels.swift; sourceTree = "<group>"; };
 		1A0000150000000000000001 /* DrawingCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingCanvasView.swift; sourceTree = "<group>"; };
 		1A0000160000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1A0000170000000000000001 /* DrawingDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingDocumentStore.swift; sourceTree = "<group>"; };
+		1A0000180000000000000001 /* HomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +55,8 @@
 				1A0000130000000000000001 /* ViewController.swift */,
 				1A0000140000000000000001 /* DrawingModels.swift */,
 				1A0000150000000000000001 /* DrawingCanvasView.swift */,
+				1A0000170000000000000001 /* DrawingDocumentStore.swift */,
+				1A0000180000000000000001 /* HomeViewController.swift */,
 				1A0000160000000000000001 /* Info.plist */,
 			);
 			path = OffsetDraw;
@@ -138,6 +144,8 @@
 				1A0000030000000000000001 /* ViewController.swift in Sources */,
 				1A0000040000000000000001 /* DrawingModels.swift in Sources */,
 				1A0000050000000000000001 /* DrawingCanvasView.swift in Sources */,
+				1A0000060000000000000001 /* DrawingDocumentStore.swift in Sources */,
+				1A0000070000000000000001 /* HomeViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
