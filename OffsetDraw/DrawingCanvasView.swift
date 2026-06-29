@@ -7,17 +7,39 @@ final class DrawingCanvasView: UIView {
         }
     }
 
+    var control = DrawingControlConfig.initial {
+        didSet {
+            control.movementScale = min(max(control.movementScale, 0.05), 1)
+            control.smoothingAmount = min(max(control.smoothingAmount, 0), 1)
+        }
+    }
+
+    var interactionMode: DrawingInteractionMode = .longPress {
+        didSet {
+            isButtonStrokeActive = false
+            finishActiveStroke()
+            resetInteractionState(keepCursor: true)
+        }
+    }
+
     private(set) var strokes: [Stroke] = []
     private var activePoints: [StrokePoint] = []
+    private var smoothedDrawingPoint: CGPoint?
     private var cursorPosition: CGPoint?
     private var targetPosition: CGPoint?
-    private var touchToTipOffset: CGPoint?
-    private var touchStartPosition: CGPoint?
+    private var latestTouchPosition: CGPoint?
+    private var touchAnchorPosition: CGPoint?
+    private var tipAnchorPosition: CGPoint?
     private var longPressStartTime: TimeInterval?
     private var longPressTimer: Timer?
     private var drawingMode = DrawingMode.idle
-    private let longPressDuration: TimeInterval = 0.3
+    private let longPressDuration: TimeInterval = 0.18
     private let longPressMovementTolerance: CGFloat = 8
+    private let doubleTapInterval: TimeInterval = 0.28
+    private let doubleTapMovementTolerance: CGFloat = 18
+    private var lastTapTime: TimeInterval?
+    private var lastTapPosition: CGPoint?
+    private var isButtonStrokeActive = false
 
     private enum DrawingMode {
         case idle
@@ -48,7 +70,8 @@ final class DrawingCanvasView: UIView {
     func clearDrawing() {
         strokes.removeAll()
         activePoints.removeAll()
-        resetLongPressState(keepCursor: true)
+        smoothedDrawingPoint = nil
+        resetInteractionState(keepCursor: true)
         setNeedsDisplay()
     }
 
@@ -93,23 +116,19 @@ final class DrawingCanvasView: UIView {
         }
 
         ensureCursorPosition()
-        resetLongPressState(keepCursor: true)
+        resetInteractionState(keepCursor: true)
         guard let cursorPosition else {
             return
         }
 
         let touchPoint = touch.location(in: self)
-        touchToTipOffset = CGPoint(
-            x: cursorPosition.x - touchPoint.x,
-            y: cursorPosition.y - touchPoint.y
-        )
+        latestTouchPosition = touchPoint
+        touchAnchorPosition = touchPoint
+        tipAnchorPosition = cursorPosition
 
         activePoints.removeAll()
         targetPosition = cursorPosition
-        touchStartPosition = cursorPosition
-        longPressStartTime = CACurrentMediaTime()
-        drawingMode = .waitingLongPress
-        startLongPressTimer()
+        configureTouchStart(for: cursorPosition)
         setNeedsDisplay()
     }
 
@@ -120,22 +139,36 @@ final class DrawingCanvasView: UIView {
 
         let samples = event?.coalescedTouches(for: touch) ?? [touch]
         for sample in samples {
-            guard let point = drawingPoint(from: sample) else {
-                continue
-            }
+            latestTouchPosition = sample.location(in: self)
 
             switch drawingMode {
             case .waitingLongPress:
+                guard let point = drawingPoint(from: sample, movementScale: 1) else {
+                    continue
+                }
+
                 moveCursor(to: point)
                 if hasMovedBeyondLongPressTolerance(to: point) {
-                    cancelLongPress(keepCursor: true, keepTouchOffset: true)
+                    cancelLongPress(keepCursor: true, keepTouchAnchor: true)
                     drawingMode = .hoveringTip
                 }
             case .hoveringTip:
+                guard let point = drawingPoint(from: sample, movementScale: 1) else {
+                    continue
+                }
+
                 moveCursor(to: point)
             case .drawing:
+                guard let point = drawingPoint(from: sample, movementScale: control.movementScale) else {
+                    continue
+                }
+
                 appendPoint(point)
             case .idle:
+                guard let point = drawingPoint(from: sample, movementScale: 1) else {
+                    continue
+                }
+
                 moveCursor(to: point)
             }
         }
@@ -144,34 +177,63 @@ final class DrawingCanvasView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        recordTapIfNeeded(touch: touches.first)
         finishActiveStroke()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         activePoints.removeAll()
-        resetLongPressState(keepCursor: true)
+        smoothedDrawingPoint = nil
+        resetInteractionState(keepCursor: true)
         setNeedsDisplay()
     }
 
     private func configure() {
         backgroundColor = .white
-        isMultipleTouchEnabled = false
+        isMultipleTouchEnabled = true
         contentMode = .redraw
     }
 
-    private func drawingPoint(from touch: UITouch?) -> CGPoint? {
+    func beginButtonStroke() {
+        guard interactionMode == .buttonHold else {
+            return
+        }
+
+        isButtonStrokeActive = true
+        ensureCursorPosition()
+        guard let cursorPosition else {
+            return
+        }
+
+        guard drawingMode != .drawing else {
+            return
+        }
+
+        beginDrawing(at: cursorPosition)
+    }
+
+    func endButtonStroke() {
+        guard interactionMode == .buttonHold else {
+            return
+        }
+
+        isButtonStrokeActive = false
+        finishActiveStroke()
+    }
+
+    private func drawingPoint(from touch: UITouch?, movementScale: CGFloat) -> CGPoint? {
         guard let touch else {
             return nil
         }
 
         let touchPoint = touch.location(in: self)
-        guard let touchToTipOffset else {
+        guard let touchAnchorPosition, let tipAnchorPosition else {
             return touchPoint
         }
 
         return CGPoint(
-            x: touchPoint.x + touchToTipOffset.x,
-            y: touchPoint.y + touchToTipOffset.y
+            x: tipAnchorPosition.x + (touchPoint.x - touchAnchorPosition.x) * movementScale,
+            y: tipAnchorPosition.y + (touchPoint.y - touchAnchorPosition.y) * movementScale
         )
     }
 
@@ -198,9 +260,10 @@ final class DrawingCanvasView: UIView {
 
     private func appendPoint(_ point: CGPoint) {
         let stabilizedPoint = stabilizedTipPosition(for: point)
+        let smoothedPoint = smoothedPoint(for: stabilizedPoint)
         let previousTipPosition = cursorPosition ?? stabilizedPoint
         targetPosition = point
-        guard previousTipPosition != stabilizedPoint else {
+        guard previousTipPosition != smoothedPoint else {
             return
         }
 
@@ -208,18 +271,40 @@ final class DrawingCanvasView: UIView {
             activePoints.append(StrokePoint(position: previousTipPosition, timestamp: CACurrentMediaTime()))
         }
 
-        guard activePoints.last?.position != stabilizedPoint else {
-            cursorPosition = stabilizedPoint
+        guard activePoints.last?.position != smoothedPoint else {
+            cursorPosition = smoothedPoint
             return
         }
 
-        activePoints.append(StrokePoint(position: stabilizedPoint, timestamp: CACurrentMediaTime()))
-        cursorPosition = stabilizedPoint
+        guard shouldAppendPoint(smoothedPoint) else {
+            cursorPosition = smoothedPoint
+            return
+        }
+
+        activePoints.append(StrokePoint(position: smoothedPoint, timestamp: CACurrentMediaTime()))
+        cursorPosition = smoothedPoint
+    }
+
+    private func beginDrawing(at point: CGPoint) {
+        longPressTimer?.invalidate()
+        longPressTimer = nil
+        longPressStartTime = nil
+        drawingMode = .drawing
+        activePoints.removeAll()
+        targetPosition = point
+        cursorPosition = point
+        smoothedDrawingPoint = point
+        if let latestTouchPosition {
+            touchAnchorPosition = latestTouchPosition
+            tipAnchorPosition = point
+        }
+        activePoints.append(StrokePoint(position: point, timestamp: CACurrentMediaTime()))
+        setNeedsDisplay()
     }
 
     private func moveCursor(to targetPoint: CGPoint) {
         targetPosition = targetPoint
-        cursorPosition = stabilizedTipPosition(for: targetPoint)
+        cursorPosition = targetPoint
     }
 
     private func finishActiveStroke() {
@@ -228,7 +313,8 @@ final class DrawingCanvasView: UIView {
         }
 
         activePoints.removeAll()
-        resetLongPressState(keepCursor: true)
+        smoothedDrawingPoint = nil
+        resetInteractionState(keepCursor: true)
         setNeedsDisplay()
     }
 
@@ -263,31 +349,102 @@ final class DrawingCanvasView: UIView {
             return
         }
 
-        longPressTimer?.invalidate()
-        longPressTimer = nil
-        drawingMode = .drawing
-        activePoints.removeAll()
-        setNeedsDisplay()
+        beginDrawing(at: cursorPosition ?? tipAnchorPosition ?? .zero)
     }
 
-    private func cancelLongPress(keepCursor: Bool, keepTouchOffset: Bool = false) {
+    private func cancelLongPress(keepCursor: Bool, keepTouchAnchor: Bool = false) {
         longPressTimer?.invalidate()
         longPressTimer = nil
         longPressStartTime = nil
-        touchStartPosition = nil
-        if !keepTouchOffset {
-            touchToTipOffset = nil
+        if !keepTouchAnchor {
+            latestTouchPosition = nil
+            touchAnchorPosition = nil
+            tipAnchorPosition = nil
         }
         activePoints.removeAll()
+        smoothedDrawingPoint = nil
         if !keepCursor {
             cursorPosition = nil
             targetPosition = nil
         }
     }
 
-    private func resetLongPressState(keepCursor: Bool) {
+    private func smoothedPoint(for point: CGPoint) -> CGPoint {
+        guard let smoothedDrawingPoint else {
+            self.smoothedDrawingPoint = point
+            return point
+        }
+
+        let followFactor = 0.65 - control.smoothingAmount * 0.49
+        let smoothedPoint = CGPoint(
+            x: smoothedDrawingPoint.x + (point.x - smoothedDrawingPoint.x) * followFactor,
+            y: smoothedDrawingPoint.y + (point.y - smoothedDrawingPoint.y) * followFactor
+        )
+        self.smoothedDrawingPoint = smoothedPoint
+        return smoothedPoint
+    }
+
+    private func shouldAppendPoint(_ point: CGPoint) -> Bool {
+        guard let lastPoint = activePoints.last?.position else {
+            return true
+        }
+
+        let minimumDistance = 0.5 + control.smoothingAmount * 4.5
+        let xDistance = point.x - lastPoint.x
+        let yDistance = point.y - lastPoint.y
+        return hypot(xDistance, yDistance) >= minimumDistance
+    }
+
+    private func resetInteractionState(keepCursor: Bool) {
         cancelLongPress(keepCursor: keepCursor)
         drawingMode = .idle
+    }
+
+    private func configureTouchStart(for point: CGPoint) {
+        switch interactionMode {
+        case .longPress:
+            longPressStartTime = CACurrentMediaTime()
+            drawingMode = .waitingLongPress
+            startLongPressTimer()
+        case .buttonHold:
+            if isButtonStrokeActive {
+                beginDrawing(at: point)
+            } else {
+                drawingMode = .hoveringTip
+            }
+        case .doubleTapHold:
+            if isSecondTap(at: point) {
+                lastTapTime = nil
+                lastTapPosition = nil
+                beginDrawing(at: point)
+            } else {
+                drawingMode = .hoveringTip
+            }
+        }
+    }
+
+    private func recordTapIfNeeded(touch: UITouch?) {
+        guard interactionMode == .doubleTapHold, drawingMode != .drawing else {
+            return
+        }
+
+        guard let point = drawingPoint(from: touch, movementScale: 1) ?? cursorPosition else {
+            return
+        }
+
+        lastTapTime = CACurrentMediaTime()
+        lastTapPosition = point
+    }
+
+    private func isSecondTap(at point: CGPoint) -> Bool {
+        guard let lastTapTime, let lastTapPosition else {
+            return false
+        }
+
+        let elapsed = CACurrentMediaTime() - lastTapTime
+        let xDistance = point.x - lastTapPosition.x
+        let yDistance = point.y - lastTapPosition.y
+        return elapsed <= doubleTapInterval && hypot(xDistance, yDistance) <= doubleTapMovementTolerance
     }
 
     private var longPressProgress: CGFloat {
@@ -300,12 +457,12 @@ final class DrawingCanvasView: UIView {
     }
 
     private func hasMovedBeyondLongPressTolerance(to point: CGPoint) -> Bool {
-        guard let touchStartPosition else {
+        guard let tipAnchorPosition else {
             return false
         }
 
-        let xDistance = point.x - touchStartPosition.x
-        let yDistance = point.y - touchStartPosition.y
+        let xDistance = point.x - tipAnchorPosition.x
+        let yDistance = point.y - tipAnchorPosition.y
         return hypot(xDistance, yDistance) > longPressMovementTolerance
     }
 
