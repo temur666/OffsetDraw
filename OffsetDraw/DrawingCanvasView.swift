@@ -21,6 +21,33 @@ final class DrawingCanvasView: UIView {
         }
     }
 
+    var canvasConfig = CanvasConfigDTO.initial {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+
+    var showsCalibrationOverlay = false {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+
+    var layers: [DrawingLayer] = [DrawingLayer(id: UUID(), title: "Layer 1", isVisible: true, opacity: 1)] {
+        didSet {
+            if !layers.contains(where: { $0.id == activeLayerID }), let firstLayer = layers.first {
+                activeLayerID = firstLayer.id
+            }
+            setNeedsDisplay()
+        }
+    }
+
+    var activeLayerID: UUID = UUID() {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+
     private(set) var strokes: [Stroke] = []
     private var activePoints: [StrokePoint] = []
     private var smoothedDrawingPoint: CGPoint?
@@ -72,26 +99,68 @@ final class DrawingCanvasView: UIView {
         onDocumentChanged?()
     }
 
-    func load(strokes: [Stroke], brush: BrushConfig, control: DrawingControlConfig, boardColor: UIColor) {
+    var isEraserEnabled: Bool {
+        brush.blendMode == .clear
+    }
+
+    var activeLayerTitle: String {
+        layers.first(where: { $0.id == activeLayerID })?.title ?? "Layer"
+    }
+
+    var isActiveLayerVisible: Bool {
+        layers.first(where: { $0.id == activeLayerID })?.isVisible ?? true
+    }
+
+    func load(
+        strokes: [Stroke],
+        brush: BrushConfig,
+        control: DrawingControlConfig,
+        boardColor: UIColor,
+        canvas: CanvasConfigDTO,
+        layers: [DrawingLayer],
+        activeLayerID: UUID
+    ) {
         self.strokes = strokes
         self.brush = brush
         self.control = control
         self.boardColor = boardColor
+        self.canvasConfig = canvas
+        self.layers = layers.isEmpty ? [DrawingLayer(id: activeLayerID, title: "Layer 1", isVisible: true, opacity: 1)] : layers
+        self.activeLayerID = self.layers.contains(where: { $0.id == activeLayerID }) ? activeLayerID : self.layers[0].id
         activePoints.removeAll()
         smoothedDrawingPoint = nil
         resetInteractionState(keepCursor: false)
         setNeedsDisplay()
     }
 
-    func renderImage() -> UIImage {
+    func renderImage(includeCursor: Bool = false, thumbnailSize: CGSize? = nil) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = UIScreen.main.scale
-        format.opaque = true
+        format.opaque = !canvasConfig.isTransparentExportEnabled
+        let sourceBounds = CGRect(
+            x: 0,
+            y: 0,
+            width: max(canvasConfig.width, 1),
+            height: max(canvasConfig.height, 1)
+        )
+        let outputBounds = CGRect(origin: .zero, size: thumbnailSize ?? sourceBounds.size)
 
-        return UIGraphicsImageRenderer(bounds: bounds, format: format).image { context in
-            boardColor.setFill()
-            context.fill(bounds)
-            drawStrokes(strokes, in: context.cgContext)
+        return UIGraphicsImageRenderer(bounds: outputBounds, format: format).image { context in
+            let scale = min(
+                outputBounds.width / max(sourceBounds.width, 1),
+                outputBounds.height / max(sourceBounds.height, 1)
+            )
+            let renderedSize = CGSize(width: sourceBounds.width * scale, height: sourceBounds.height * scale)
+            let xOffset = (outputBounds.width - renderedSize.width) / 2
+            let yOffset = (outputBounds.height - renderedSize.height) / 2
+
+            drawRenderBackground(in: outputBounds, context: context.cgContext)
+            context.cgContext.translateBy(x: xOffset, y: yOffset)
+            context.cgContext.scaleBy(x: scale, y: scale)
+            drawStoredStrokes(strokes, in: context.cgContext)
+            if includeCursor, let cursorPosition {
+                drawCursor(at: renderedPoint(from: cursorPosition, scale: scale, offset: CGPoint(x: xOffset, y: yOffset)), in: context.cgContext)
+            }
         }
     }
 
@@ -101,21 +170,43 @@ final class DrawingCanvasView: UIView {
         }
 
         ensureCursorPosition()
-        boardColor.setFill()
-        context.fill(rect)
-        drawStrokes(strokes, in: context)
+        drawCanvasShadow(in: context)
+        drawBoardBackground(in: canvasRect, context: context, respectsTransparency: false)
 
-        if !activePoints.isEmpty {
-            drawStroke(Stroke(points: activePoints, brush: brush), in: context)
-        }
+        context.saveGState()
+        context.translateBy(x: canvasRect.minX, y: canvasRect.minY)
+        context.scaleBy(x: canvasScale, y: canvasScale)
+        drawStrokes(activeStroke: activeStroke, in: context)
+        context.restoreGState()
 
-        if let cursorPosition, let targetPosition {
-            drawStabilizerLine(from: cursorPosition, to: targetPosition, in: context)
+        if control.showsStabilizerGuide, let cursorPosition, let targetPosition {
+            drawStabilizerLine(from: viewPoint(from: cursorPosition), to: viewPoint(from: targetPosition), in: context)
         }
 
         if let cursorPosition {
-            drawCursor(at: cursorPosition, in: context)
+            drawCursor(at: viewPoint(from: cursorPosition), in: context)
         }
+
+        if showsCalibrationOverlay {
+            drawCalibrationOverlay(in: context)
+        }
+    }
+
+    private var canvasRect: CGRect {
+        let configuredSize = CGSize(width: max(canvasConfig.width, 1), height: max(canvasConfig.height, 1))
+        let scale = min(bounds.width / configuredSize.width, bounds.height / configuredSize.height)
+        let renderedSize = CGSize(width: configuredSize.width * scale, height: configuredSize.height * scale)
+        return CGRect(
+            x: (bounds.width - renderedSize.width) / 2,
+            y: (bounds.height - renderedSize.height) / 2,
+            width: renderedSize.width,
+            height: renderedSize.height
+        )
+    }
+
+    private var canvasScale: CGFloat {
+        let configuredSize = CGSize(width: max(canvasConfig.width, 1), height: max(canvasConfig.height, 1))
+        return min(bounds.width / configuredSize.width, bounds.height / configuredSize.height)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -123,13 +214,16 @@ final class DrawingCanvasView: UIView {
             return
         }
 
+        ensureActiveLayerVisible()
         ensureCursorPosition()
         resetInteractionState(keepCursor: true)
         guard let cursorPosition else {
             return
         }
 
-        let touchPoint = touch.location(in: self)
+        guard let touchPoint = canvasPoint(from: touch.location(in: self)) else {
+            return
+        }
         latestTouchPosition = touchPoint
         touchAnchorPosition = touchPoint
         tipAnchorPosition = cursorPosition
@@ -147,7 +241,10 @@ final class DrawingCanvasView: UIView {
 
         let samples = event?.coalescedTouches(for: touch) ?? [touch]
         for sample in samples {
-            latestTouchPosition = sample.location(in: self)
+            guard let samplePoint = canvasPoint(from: sample.location(in: self)) else {
+                continue
+            }
+            latestTouchPosition = samplePoint
 
             switch drawingMode {
             case .waitingLongPress:
@@ -206,7 +303,9 @@ final class DrawingCanvasView: UIView {
             return nil
         }
 
-        let touchPoint = touch.location(in: self)
+        guard let touchPoint = canvasPoint(from: touch.location(in: self)) else {
+            return nil
+        }
         guard let touchAnchorPosition, let tipAnchorPosition else {
             return touchPoint
         }
@@ -214,6 +313,139 @@ final class DrawingCanvasView: UIView {
         return CGPoint(
             x: tipAnchorPosition.x + (touchPoint.x - touchAnchorPosition.x) * movementScale,
             y: tipAnchorPosition.y + (touchPoint.y - touchAnchorPosition.y) * movementScale
+        )
+    }
+
+    func addLayer() {
+        let layer = DrawingLayer(id: UUID(), title: "Layer \(layers.count + 1)", isVisible: true, opacity: 1)
+        layers.append(layer)
+        activeLayerID = layer.id
+        onDocumentChanged?()
+    }
+
+    func ensureActiveLayerVisible() {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }), !layers[index].isVisible else {
+            return
+        }
+
+        layers[index].isVisible = true
+        onDocumentChanged?()
+    }
+
+    func toggleActiveLayerVisibility() {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }) else {
+            return
+        }
+
+        layers[index].isVisible.toggle()
+        if !layers[index].isVisible, layers[index].id == activeLayerID {
+            if let visibleLayer = layers.first(where: \.isVisible) {
+                activeLayerID = visibleLayer.id
+            } else {
+                layers[index].isVisible = true
+            }
+        }
+        onDocumentChanged?()
+    }
+
+    func renameActiveLayer(to title: String) {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }) else {
+            return
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else {
+            return
+        }
+
+        layers[index].title = trimmedTitle
+        onDocumentChanged?()
+    }
+
+    func setActiveLayerOpacity(_ opacity: CGFloat) {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }) else {
+            return
+        }
+
+        layers[index].opacity = min(max(opacity, 0), 1)
+        onDocumentChanged?()
+    }
+
+    func moveActiveLayer(up: Bool) {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }) else {
+            return
+        }
+
+        let targetIndex = up ? index + 1 : index - 1
+        guard layers.indices.contains(targetIndex) else {
+            return
+        }
+
+        layers.swapAt(index, targetIndex)
+        onDocumentChanged?()
+    }
+
+    func deleteActiveLayer() {
+        guard layers.count > 1, let index = layers.firstIndex(where: { $0.id == activeLayerID }) else {
+            return
+        }
+
+        let removedLayerID = layers[index].id
+        layers.remove(at: index)
+        strokes.removeAll { $0.layerID == removedLayerID }
+        activeLayerID = layers[min(index, layers.count - 1)].id
+        onDocumentChanged?()
+    }
+
+    func mergeActiveLayerDown() {
+        guard let index = layers.firstIndex(where: { $0.id == activeLayerID }), index > 0 else {
+            return
+        }
+
+        let sourceLayerID = layers[index].id
+        let targetLayerID = layers[index - 1].id
+        strokes = strokes.map { stroke in
+            if stroke.layerID == sourceLayerID {
+                return Stroke(points: stroke.points, brush: stroke.brush, layerID: targetLayerID)
+            }
+            return stroke
+        }
+        layers.remove(at: index)
+        activeLayerID = targetLayerID
+        onDocumentChanged?()
+    }
+
+    func selectLayer(at index: Int) {
+        guard layers.indices.contains(index) else {
+            return
+        }
+
+        activeLayerID = layers[index].id
+        onDocumentChanged?()
+    }
+
+    private func canvasPoint(from viewPoint: CGPoint) -> CGPoint? {
+        guard canvasRect.contains(viewPoint), canvasScale > 0 else {
+            return nil
+        }
+
+        return CGPoint(
+            x: (viewPoint.x - canvasRect.minX) / canvasScale,
+            y: (viewPoint.y - canvasRect.minY) / canvasScale
+        )
+    }
+
+    private func viewPoint(from canvasPoint: CGPoint) -> CGPoint {
+        CGPoint(
+            x: canvasRect.minX + canvasPoint.x * canvasScale,
+            y: canvasRect.minY + canvasPoint.y * canvasScale
+        )
+    }
+
+    private func renderedPoint(from canvasPoint: CGPoint, scale: CGFloat, offset: CGPoint) -> CGPoint {
+        CGPoint(
+            x: offset.x + canvasPoint.x * scale,
+            y: offset.y + canvasPoint.y * scale
         )
     }
 
@@ -289,7 +521,7 @@ final class DrawingCanvasView: UIView {
 
     private func finishActiveStroke() {
         if drawingMode == .drawing && !activePoints.isEmpty {
-            strokes.append(Stroke(points: activePoints, brush: brush))
+            strokes.append(Stroke(points: activePoints, brush: brush, layerID: activeLayerID))
             onDocumentChanged?()
         }
 
@@ -301,7 +533,7 @@ final class DrawingCanvasView: UIView {
 
     private func ensureCursorPosition() {
         if cursorPosition == nil {
-            cursorPosition = CGPoint(x: bounds.midX, y: bounds.midY - 48)
+            cursorPosition = CGPoint(x: canvasConfig.width / 2, y: canvasConfig.height / 2 - 48)
         }
     }
 
@@ -382,6 +614,11 @@ final class DrawingCanvasView: UIView {
     }
 
     private func configureTouchStart(for point: CGPoint) {
+        guard control.requiresLongPress else {
+            beginDrawing(at: point)
+            return
+        }
+
         longPressStartTime = CACurrentMediaTime()
         drawingMode = .waitingLongPress
         startLongPressTimer()
@@ -406,10 +643,48 @@ final class DrawingCanvasView: UIView {
         return hypot(xDistance, yDistance) > longPressMovementTolerance
     }
 
-    private func drawStrokes(_ strokes: [Stroke], in context: CGContext) {
-        for stroke in strokes {
+    private var activeStroke: Stroke? {
+        guard !activePoints.isEmpty else {
+            return nil
+        }
+
+        return Stroke(points: activePoints, brush: brush, layerID: activeLayerID)
+    }
+
+    private func drawStrokes(activeStroke: Stroke?, in context: CGContext) {
+        let visibleLayers = layers.filter(\.isVisible)
+        for layer in visibleLayers {
+            var layerStrokes = strokes
+            if let activeStroke, activeStroke.layerID == layer.id {
+                layerStrokes.append(activeStroke)
+            }
+            drawLayer(layer: layer, strokes: layerStrokes, in: context)
+        }
+    }
+
+    private func drawStoredStrokes(_ strokes: [Stroke], in context: CGContext) {
+        let visibleLayers = layers.filter(\.isVisible)
+        for layer in visibleLayers {
+            drawLayer(layer: layer, strokes: strokes, in: context)
+        }
+    }
+
+    private func drawLayer(layer: DrawingLayer, strokes: [Stroke], in context: CGContext) {
+        let layerStrokes = strokes.filter { $0.layerID == layer.id }
+        guard !layerStrokes.isEmpty else {
+            return
+        }
+
+        context.saveGState()
+        context.setAlpha(layer.opacity)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+
+        for stroke in layerStrokes {
             drawStroke(stroke, in: context)
         }
+
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 
     private func drawStroke(_ stroke: Stroke, in context: CGContext) {
@@ -418,6 +693,7 @@ final class DrawingCanvasView: UIView {
         }
 
         context.saveGState()
+        context.setBlendMode(stroke.brush.blendMode)
         context.setStrokeColor(stroke.brush.color.cgColor)
         context.setLineWidth(stroke.brush.lineWidth)
         context.setLineCap(.round)
@@ -453,6 +729,68 @@ final class DrawingCanvasView: UIView {
             context.strokePath()
         }
 
+        context.restoreGState()
+    }
+
+    private func drawBoardBackground(in rect: CGRect, context: CGContext, respectsTransparency: Bool) {
+        guard !respectsTransparency || !canvasConfig.isTransparentExportEnabled else {
+            context.clear(rect)
+            return
+        }
+
+        boardColor.setFill()
+        context.fill(rect)
+    }
+
+    private func drawRenderBackground(in rect: CGRect, context: CGContext) {
+        if canvasConfig.isTransparentExportEnabled {
+            context.clear(rect)
+        } else {
+            boardColor.setFill()
+            context.fill(rect)
+        }
+    }
+
+    private func drawCanvasShadow(in context: CGContext) {
+        guard canvasRect != bounds else {
+            return
+        }
+
+        context.saveGState()
+        UIColor.secondarySystemBackground.setFill()
+        context.fill(bounds)
+        context.setShadow(offset: CGSize(width: 0, height: 2), blur: 8, color: UIColor.black.withAlphaComponent(0.18).cgColor)
+        UIColor.white.setFill()
+        context.fill(canvasRect)
+        context.restoreGState()
+    }
+
+    private func drawCalibrationOverlay(in context: CGContext) {
+        context.saveGState()
+        let rect = canvasRect.insetBy(dx: 18, dy: 18)
+        context.setLineWidth(1)
+        context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.28).cgColor)
+        context.setLineDash(phase: 0, lengths: [6, 6])
+
+        let horizontalY = rect.midY
+        context.move(to: CGPoint(x: rect.minX, y: horizontalY))
+        context.addLine(to: CGPoint(x: rect.maxX, y: horizontalY))
+
+        let verticalX = rect.midX
+        context.move(to: CGPoint(x: verticalX, y: rect.minY))
+        context.addLine(to: CGPoint(x: verticalX, y: rect.maxY))
+
+        context.strokePath()
+        context.setLineDash(phase: 0, lengths: [])
+
+        context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.18).cgColor)
+        let radius = min(rect.width, rect.height) * 0.22
+        context.strokeEllipse(in: CGRect(
+            x: rect.midX - radius,
+            y: rect.midY - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
         context.restoreGState()
     }
 
