@@ -5,6 +5,10 @@ import PencilKit
 private final class ToolPickerCanvasView: PKCanvasView {
     var passesTouchesThrough = false
 
+    override var canBecomeFirstResponder: Bool {
+        true
+    }
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard !passesTouchesThrough else {
             return false
@@ -104,12 +108,31 @@ private final class OffsetToolPickerBridge: NSObject, PKToolPickerObserver {
             return
         }
 
-        toolPicker.setVisible(true, forFirstResponder: pencilCanvas)
+        if #available(iOS 26.0, *) {
+            pencilCanvas.pencilKitResponderState.activeToolPicker = toolPicker
+            pencilCanvas.pencilKitResponderState.toolPickerVisibility = .visible
+        } else {
+            toolPicker.setVisible(true, forFirstResponder: pencilCanvas)
+        }
+
         pencilCanvas.becomeFirstResponder()
+
+        // A newly pushed drawing controller can finish its responder transition
+        // one run loop after UINavigationController reports didShow. Reassert the
+        // picker once the transition is fully settled so it cannot remain hidden.
+        DispatchQueue.main.async { [weak self] in
+            self?.ensurePickerVisible()
+        }
     }
 
     func deactivate() {
-        toolPicker.setVisible(false, forFirstResponder: pencilCanvas)
+        if #available(iOS 26.0, *) {
+            pencilCanvas.pencilKitResponderState.toolPickerVisibility = .inactive
+            pencilCanvas.pencilKitResponderState.activeToolPicker = nil
+        } else {
+            toolPicker.setVisible(false, forFirstResponder: pencilCanvas)
+        }
+
         pencilCanvas.resignFirstResponder()
         toolPicker.removeObserver(self)
         toolPicker.removeObserver(pencilCanvas)
@@ -118,6 +141,23 @@ private final class OffsetToolPickerBridge: NSObject, PKToolPickerObserver {
 
     func toolPickerSelectedToolItemDidChange(_ toolPicker: PKToolPicker) {
         applySelectedToolState()
+    }
+
+    private func ensurePickerVisible() {
+        guard pencilCanvas.window != nil else {
+            return
+        }
+
+        if #available(iOS 26.0, *) {
+            pencilCanvas.pencilKitResponderState.activeToolPicker = toolPicker
+            pencilCanvas.pencilKitResponderState.toolPickerVisibility = .visible
+        } else {
+            toolPicker.setVisible(true, forFirstResponder: pencilCanvas)
+        }
+
+        if !pencilCanvas.isFirstResponder {
+            pencilCanvas.becomeFirstResponder()
+        }
     }
 
     private func applySelectedToolState() {
