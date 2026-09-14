@@ -16,11 +16,23 @@ private struct CheckHighlighterStamp {
 }
 
 @available(iOS 18.0, *)
+private struct CheckHighlighterStroke {
+    let points: [CGPoint]
+    let color: UIColor
+    let size: CGFloat
+}
+
+@available(iOS 18.0, *)
 private final class CheckHighlighterCanvasView: UIView {
     var styleProvider: (() -> (color: UIColor, size: CGFloat))?
 
+    private let strokeMovementThreshold: CGFloat = 8
     private var stamps: [CheckHighlighterStamp] = []
-    private var lastStampPoint: CGPoint?
+    private var strokes: [CheckHighlighterStroke] = []
+    private var touchStartPoint: CGPoint?
+    private var activePoints: [CGPoint] = []
+    private var activeStyle: (color: UIColor, size: CGFloat)?
+    private var isDrawingStroke = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -38,8 +50,10 @@ private final class CheckHighlighterCanvasView: UIView {
         }
 
         let point = touch.location(in: self)
-        placeStamp(at: point)
-        lastStampPoint = point
+        touchStartPoint = point
+        activePoints = [point]
+        activeStyle = resolvedStyle()
+        isDrawingStroke = false
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -48,17 +62,42 @@ private final class CheckHighlighterCanvasView: UIView {
         }
 
         let samples = event?.coalescedTouches(for: touch) ?? [touch]
+        var didChangeStroke = false
         for sample in samples {
-            placeIntermediateStamps(toward: sample.location(in: self))
+            didChangeStroke = handleMovedPoint(sample.location(in: self)) || didChangeStroke
+        }
+
+        if didChangeStroke {
+            setNeedsDisplay()
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        lastStampPoint = nil
+        if let touch = touches.first {
+            _ = handleMovedPoint(touch.location(in: self))
+        }
+
+        if isDrawingStroke,
+           activePoints.count > 1,
+           let activeStyle {
+            strokes.append(
+                CheckHighlighterStroke(
+                    points: activePoints,
+                    color: activeStyle.color,
+                    size: activeStyle.size
+                )
+            )
+        } else if let touchStartPoint {
+            placeStamp(at: touchStartPoint, style: activeStyle ?? resolvedStyle())
+        }
+
+        resetInteraction()
+        setNeedsDisplay()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        lastStampPoint = nil
+        resetInteraction()
+        setNeedsDisplay()
     }
 
     override func draw(_ rect: CGRect) {
@@ -66,8 +105,25 @@ private final class CheckHighlighterCanvasView: UIView {
             return
         }
 
+        for stroke in strokes {
+            draw(stroke, in: context)
+        }
+
         for stamp in stamps {
             draw(stamp, in: context)
+        }
+
+        if isDrawingStroke,
+           activePoints.count > 1,
+           let activeStyle {
+            draw(
+                CheckHighlighterStroke(
+                    points: activePoints,
+                    color: activeStyle.color,
+                    size: activeStyle.size
+                ),
+                in: context
+            )
         }
     }
 
@@ -79,47 +135,34 @@ private final class CheckHighlighterCanvasView: UIView {
         contentMode = .redraw
     }
 
-    private func placeIntermediateStamps(toward point: CGPoint) {
-        guard let lastStampPoint else {
-            placeStamp(at: point)
-            self.lastStampPoint = point
-            return
+    @discardableResult
+    private func handleMovedPoint(_ point: CGPoint) -> Bool {
+        guard let touchStartPoint else {
+            return false
         }
 
-        let style = resolvedStyle()
-        let spacing = max(18, style.size * 0.82)
-        let dx = point.x - lastStampPoint.x
-        let dy = point.y - lastStampPoint.y
-        let distance = hypot(dx, dy)
-
-        guard distance >= spacing else {
-            return
-        }
-
-        let stepCount = Int(distance / spacing)
-        guard stepCount > 0 else {
-            return
-        }
-
-        let unitX = dx / distance
-        let unitY = dy / distance
-        var newestStampPoint = lastStampPoint
-
-        for step in 1...stepCount {
-            let stepDistance = CGFloat(step) * spacing
-            let stampPoint = CGPoint(
-                x: lastStampPoint.x + unitX * stepDistance,
-                y: lastStampPoint.y + unitY * stepDistance
+        if !isDrawingStroke {
+            let distanceFromStart = hypot(
+                point.x - touchStartPoint.x,
+                point.y - touchStartPoint.y
             )
-            placeStamp(at: stampPoint, style: style)
-            newestStampPoint = stampPoint
+
+            guard distanceFromStart >= strokeMovementThreshold else {
+                return false
+            }
+
+            // The gesture becomes a normal highlighter stroke as soon as it moves
+            // far enough. The stored start point lets the stroke begin exactly at
+            // touch-down instead of appearing after the threshold.
+            isDrawingStroke = true
         }
 
-        self.lastStampPoint = newestStampPoint
-    }
+        guard activePoints.last != point else {
+            return false
+        }
 
-    private func placeStamp(at point: CGPoint) {
-        placeStamp(at: point, style: resolvedStyle())
+        activePoints.append(point)
+        return true
     }
 
     private func placeStamp(at point: CGPoint, style: (color: UIColor, size: CGFloat)) {
@@ -130,12 +173,67 @@ private final class CheckHighlighterCanvasView: UIView {
                 size: style.size
             )
         )
-        setNeedsDisplay()
     }
 
     private func resolvedStyle() -> (color: UIColor, size: CGFloat) {
         let style = styleProvider?() ?? (.systemYellow, 40)
         return (style.color, max(22, style.size))
+    }
+
+    private func resetInteraction() {
+        touchStartPoint = nil
+        activePoints.removeAll()
+        activeStyle = nil
+        isDrawingStroke = false
+    }
+
+    private func draw(_ stroke: CheckHighlighterStroke, in context: CGContext) {
+        guard stroke.points.count > 1 else {
+            return
+        }
+
+        context.saveGState()
+        context.setBlendMode(.multiply)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        let lineWidth = max(8, stroke.size * 0.30)
+        let selectedAlpha = max(stroke.color.cgColor.alpha, 0.35)
+
+        drawPath(
+            stroke.points,
+            color: stroke.color.withAlphaComponent(selectedAlpha * 0.09),
+            lineWidth: lineWidth * 1.24,
+            in: context
+        )
+        drawPath(
+            stroke.points,
+            color: stroke.color.withAlphaComponent(selectedAlpha * 0.30),
+            lineWidth: lineWidth,
+            in: context
+        )
+
+        context.restoreGState()
+    }
+
+    private func drawPath(
+        _ points: [CGPoint],
+        color: UIColor,
+        lineWidth: CGFloat,
+        in context: CGContext
+    ) {
+        guard let first = points.first else {
+            return
+        }
+
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(lineWidth)
+        context.beginPath()
+        context.move(to: first)
+        for point in points.dropFirst() {
+            context.addLine(to: point)
+        }
+        context.strokePath()
     }
 
     private func draw(_ stamp: CheckHighlighterStamp, in context: CGContext) {
@@ -150,9 +248,8 @@ private final class CheckHighlighterCanvasView: UIView {
         let start = CGPoint(x: -size * 0.36, y: 0)
         let middle = CGPoint(x: -size * 0.10, y: size * 0.28)
         let end = CGPoint(x: size * 0.44, y: -size * 0.34)
-        let selectedAlpha = stamp.color.cgColor.alpha
+        let selectedAlpha = max(stamp.color.cgColor.alpha, 0.35)
 
-        // A soft outer pass gives the mark a slightly soaked highlighter edge.
         context.setStrokeColor(stamp.color.withAlphaComponent(selectedAlpha * 0.10).cgColor)
         context.setLineWidth(lineWidth * 1.30)
         context.beginPath()
@@ -161,7 +258,6 @@ private final class CheckHighlighterCanvasView: UIView {
         context.addLine(to: end)
         context.strokePath()
 
-        // The main pass stays translucent so overlapping parts become naturally darker.
         context.setStrokeColor(stamp.color.withAlphaComponent(selectedAlpha * 0.34).cgColor)
         context.setLineWidth(lineWidth)
         context.beginPath()
@@ -251,8 +347,8 @@ private final class CheckToolPickerBridge: NSObject, PKToolPickerObserver {
             return (checkItem.color, checkItem.width)
         }
 
-        // PencilKit stays underneath. The check layer only intercepts touches while
-        // the custom tool is active, so the system tools remain completely native.
+        // PencilKit stays underneath. The custom layer only intercepts touches while
+        // Check is selected: a drag draws normally and a tap stamps a check mark.
         drawingCanvas.addSubview(pencilCanvas)
         drawingCanvas.addSubview(checkCanvas)
         NSLayoutConstraint.activate([
