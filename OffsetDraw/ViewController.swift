@@ -92,7 +92,6 @@ final class ViewController: UIViewController, UIColorPickerViewControllerDelegat
     private let store: DrawingDocumentStore
     private var document: DrawingDocument
     private var isPersistingDocument = false
-    private var previousInteractivePopGestureEnabled: Bool?
     private let canvasView = DrawingCanvasView()
     private let toolbar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     private let panelStack = UIStackView()
@@ -152,23 +151,6 @@ final class ViewController: UIViewController, UIColorPickerViewControllerDelegat
         configureCanvas()
         configureToolbar()
         loadDocument()
-    }
-
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        let popGesture = navigationController?.interactivePopGestureRecognizer
-        previousInteractivePopGestureEnabled = popGesture?.isEnabled
-        popGesture?.isEnabled = false
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        guard let previousInteractivePopGestureEnabled else {
-            return
-        }
-
-        navigationController?.interactivePopGestureRecognizer?.isEnabled = previousInteractivePopGestureEnabled
-        self.previousInteractivePopGestureEnabled = nil
     }
 
     private func configureCanvas() {
