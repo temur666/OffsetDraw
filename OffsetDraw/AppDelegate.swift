@@ -2,91 +2,13 @@ import UIKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-private enum MemoryExpansionVariant: CaseIterable {
-    case restrained
-    case expanded
-
-    var title: String {
-        switch self {
-        case .restrained: return "Memory A"
-        case .expanded: return "Memory B"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .restrained:
-            return "96pt context · softer, more restrained expansion"
-        case .expanded:
-            return "112pt context · wider, more obvious remembered surroundings"
-        }
-    }
-
-    var cropPadding: CGFloat {
-        switch self {
-        case .restrained: return 96
-        case .expanded: return 112
-        }
-    }
-
-    var wideMaskAlpha: CGFloat {
-        switch self {
-        case .restrained: return 0.36
-        case .expanded: return 0.42
-        }
-    }
-
-    var wideMaskBlur: Float {
-        switch self {
-        case .restrained: return 54
-        case .expanded: return 64
-        }
-    }
-
-    var sourceBlur: Float {
-        switch self {
-        case .restrained: return 10
-        case .expanded: return 12
-        }
-    }
-
-    var saturation: Float {
-        switch self {
-        case .restrained: return 0.40
-        case .expanded: return 0.34
-        }
-    }
-
-    var contrast: Float {
-        switch self {
-        case .restrained: return 0.85
-        case .expanded: return 0.82
-        }
-    }
-
-    var brightness: Float {
-        switch self {
-        case .restrained: return 0.04
-        case .expanded: return 0.045
-        }
-    }
-
-    var haloAlpha: CGFloat {
-        switch self {
-        case .restrained: return 0.15
-        case .expanded: return 0.17
-        }
-    }
-}
-
-private enum MemoryExpansionRenderer {
+private enum MemoryAMemoRenderer {
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
     static func render(
         source: UIImage,
         canvasBounds: CGRect,
-        points: [CGPoint],
-        variant: MemoryExpansionVariant
+        points: [CGPoint]
     ) -> UIImage? {
         guard points.count > 2,
               canvasBounds.width > 0,
@@ -104,14 +26,14 @@ private enum MemoryExpansionRenderer {
         let wideMaskImage = makeMask(
             bounds: canvasBounds,
             points: points,
-            alpha: variant.wideMaskAlpha
+            alpha: 0.36
         )
 
         guard let coreMaskCI = CIImage(image: coreMaskImage),
               let wideMaskCI = CIImage(image: wideMaskImage),
               let innerMask = blurred(coreMaskCI, radius: 12, extent: extent),
-              let wideMask = blurred(wideMaskCI, radius: variant.wideMaskBlur, extent: extent),
-              let blurredSource = blurred(sourceCI, radius: variant.sourceBlur, extent: extent) else {
+              let wideMask = blurred(wideMaskCI, radius: 54, extent: extent),
+              let blurredSource = blurred(sourceCI, radius: 10, extent: extent) else {
             return nil
         }
 
@@ -121,9 +43,9 @@ private enum MemoryExpansionRenderer {
 
         let controls = CIFilter.colorControls()
         controls.inputImage = blurredSource
-        controls.saturation = variant.saturation
-        controls.contrast = variant.contrast
-        controls.brightness = variant.brightness
+        controls.saturation = 0.40
+        controls.contrast = 0.85
+        controls.brightness = 0.04
 
         guard let fadedSource = controls.outputImage?.cropped(to: extent),
               let contextLayer = blend(
@@ -135,7 +57,7 @@ private enum MemoryExpansionRenderer {
                 mask: wideMask,
                 clear: clear,
                 extent: extent,
-                alpha: variant.haloAlpha
+                alpha: 0.15
               ) else {
             return nil
         }
@@ -155,7 +77,7 @@ private enum MemoryExpansionRenderer {
 
         let full = UIImage(cgImage: fullCG)
         let crop = regionBounds(points)
-            .insetBy(dx: -variant.cropPadding, dy: -variant.cropPadding)
+            .insetBy(dx: -96, dy: -96)
             .intersection(canvasBounds)
             .integral
 
@@ -164,6 +86,7 @@ private enum MemoryExpansionRenderer {
               let cropped = full.cgImage?.cropping(to: crop) else {
             return full
         }
+
         return UIImage(cgImage: cropped)
     }
 
@@ -214,6 +137,7 @@ private enum MemoryExpansionRenderer {
 
     private static func regionBounds(_ points: [CGPoint]) -> CGRect {
         guard let first = points.first else { return .zero }
+
         var minX = first.x
         var maxX = first.x
         var minY = first.y
@@ -266,139 +190,38 @@ private enum MemoryExpansionRenderer {
         let yellow = CIImage(
             color: CIColor(color: UIColor.systemYellow.withAlphaComponent(alpha))
         ).cropped(to: extent)
-        return blend(source: yellow, background: clear, mask: mask)?.cropped(to: extent)
+
+        return blend(
+            source: yellow,
+            background: clear,
+            mask: mask
+        )?.cropped(to: extent)
     }
 }
 
-private final class MemoryExpansionComparisonViewController: UIViewController {
-    private let source: UIImage
-    private let canvasBounds: CGRect
-    private let points: [CGPoint]
+private final class MemoryAMemoPreviewCoordinator: NSObject {
+    static let shared = MemoryAMemoPreviewCoordinator()
 
-    init(source: UIImage, canvasBounds: CGRect, points: [CGPoint]) {
-        self.source = source
-        self.canvasBounds = canvasBounds
-        self.points = points
-        super.init(nibName: nil, bundle: nil)
-    }
+    private weak var rootViewController: UIViewController?
+    private var displayLink: CADisplayLink?
+    private var lastRegionSignature: String?
 
-    required init?(coder: NSCoder) { nil }
+    func installWhenReady(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self else { return }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        title = "Memory Expansion"
-        view.backgroundColor = .systemGroupedBackground
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .close,
-            primaryAction: UIAction { [weak self] _ in
-                self?.dismiss(animated: true)
+            if self.installIfPossible() {
+                return
             }
-        )
-        configureContent()
-    }
 
-    private func configureContent() {
-        let scrollView = UIScrollView()
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.alwaysBounceVertical = true
-        view.addSubview(scrollView)
-
-        let stack = UIStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .vertical
-        stack.spacing = 18
-        scrollView.addSubview(stack)
-
-        let intro = UILabel()
-        intro.numberOfLines = 0
-        intro.font = .systemFont(ofSize: 15)
-        intro.textColor = .secondaryLabel
-        intro.text = "Same paper · same region. Only the amount of outward memory context changes."
-        stack.addArrangedSubview(intro)
-
-        for variant in MemoryExpansionVariant.allCases {
-            stack.addArrangedSubview(makeCard(for: variant))
-        }
-
-        NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -30),
-            stack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
-        ])
-    }
-
-    private func makeCard(for variant: MemoryExpansionVariant) -> UIView {
-        let card = UIView()
-        card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 24
-        card.layer.cornerCurve = .continuous
-
-        let title = UILabel()
-        title.translatesAutoresizingMaskIntoConstraints = false
-        title.font = .systemFont(ofSize: 19, weight: .semibold)
-        title.text = variant.title
-
-        let subtitle = UILabel()
-        subtitle.translatesAutoresizingMaskIntoConstraints = false
-        subtitle.numberOfLines = 0
-        subtitle.font = .systemFont(ofSize: 13)
-        subtitle.textColor = .secondaryLabel
-        subtitle.text = variant.subtitle
-
-        let preview = UIImageView()
-        preview.translatesAutoresizingMaskIntoConstraints = false
-        preview.contentMode = .scaleAspectFit
-        preview.clipsToBounds = false
-        preview.image = MemoryExpansionRenderer.render(
-            source: source,
-            canvasBounds: canvasBounds,
-            points: points,
-            variant: variant
-        )
-
-        [title, subtitle, preview].forEach(card.addSubview)
-
-        NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
-            title.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
-            title.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
-
-            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            subtitle.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
-
-            preview.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            preview.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            preview.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 12),
-            preview.heightAnchor.constraint(equalToConstant: 250),
-            preview.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14)
-        ])
-
-        return card
-    }
-}
-
-private enum MemoryExpansionPrototypeLauncher {
-    private static let buttonIdentifier = "memory-expansion-compare-button"
-
-    static func installWhenReady(attempt: Int = 0) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            if installIfPossible() { return }
-            if attempt < 14 {
-                installWhenReady(attempt: attempt + 1)
+            if attempt < 20 {
+                self.installWhenReady(attempt: attempt + 1)
             }
         }
     }
 
     @discardableResult
-    private static func installIfPossible() -> Bool {
+    private func installIfPossible() -> Bool {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState != .unattached }),
@@ -408,67 +231,49 @@ private enum MemoryExpansionPrototypeLauncher {
             return false
         }
 
-        if root.view.viewWithAccessibilityIdentifier(buttonIdentifier) != nil {
-            return true
+        rootViewController = root
+
+        if displayLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(refreshMemoPreview))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
         }
 
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.accessibilityIdentifier = buttonIdentifier
-
-        var config = UIButton.Configuration.filled()
-        config.title = "A/B"
-        config.image = UIImage(systemName: "arrow.left.and.right")
-        config.imagePadding = 5
-        config.baseForegroundColor = .white
-        config.baseBackgroundColor = UIColor.white.withAlphaComponent(0.16)
-        config.cornerStyle = .capsule
-        button.configuration = config
-
-        button.addAction(
-            UIAction { [weak root] _ in
-                guard let root,
-                      let input = comparisonInput(from: root) else {
-                    return
-                }
-
-                let comparison = MemoryExpansionComparisonViewController(
-                    source: input.source,
-                    canvasBounds: input.bounds,
-                    points: input.points
-                )
-                let navigation = UINavigationController(rootViewController: comparison)
-                navigation.modalPresentationStyle = .pageSheet
-                root.present(navigation, animated: true)
-            },
-            for: .touchUpInside
-        )
-
-        root.view.addSubview(button)
-        NSLayoutConstraint.activate([
-            button.leadingAnchor.constraint(equalTo: root.view.leadingAnchor, constant: 14),
-            button.topAnchor.constraint(equalTo: root.view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            button.widthAnchor.constraint(equalToConstant: 66),
-            button.heightAnchor.constraint(equalToConstant: 42)
-        ])
         return true
     }
 
-    private static func comparisonInput(
-        from viewController: UIViewController
-    ) -> (source: UIImage, bounds: CGRect, points: [CGPoint])? {
+    @objc private func refreshMemoPreview() {
+        guard let rootViewController else { return }
+
+        guard let points = mirroredValue(
+            named: "latestRegion",
+            from: rootViewController
+        ) as? [CGPoint],
+              points.count > 2 else {
+            lastRegionSignature = nil
+            return
+        }
+
+        let signature = regionSignature(points)
+        guard signature != lastRegionSignature else { return }
+
         guard let paperImageView = mirroredValue(
             named: "paperImageView",
-            from: viewController
+            from: rootViewController
         ) as? UIImageView,
+              let memoPreview = mirroredValue(
+                named: "memoPreview",
+                from: rootViewController
+              ) as? UIImageView,
               paperImageView.bounds.width > 0,
               paperImageView.bounds.height > 0 else {
-            return nil
+            return
         }
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
+
         let source = UIGraphicsImageRenderer(
             bounds: paperImageView.bounds,
             format: format
@@ -478,65 +283,66 @@ private enum MemoryExpansionPrototypeLauncher {
             paperImageView.layer.render(in: renderer.cgContext)
         }
 
-        let points: [CGPoint]
-        if let latest = mirroredValue(
-            named: "latestRegion",
-            from: viewController
-        ) as? [CGPoint],
-           latest.count > 2 {
-            points = latest
-        } else {
-            points = defaultRegion(in: paperImageView.bounds)
+        guard let rendered = MemoryAMemoRenderer.render(
+            source: source,
+            canvasBounds: paperImageView.bounds,
+            points: points
+        ) else {
+            return
         }
 
-        return (source, paperImageView.bounds, points)
+        memoPreview.image = rendered
+        lastRegionSignature = signature
     }
 
-    private static func mirroredValue(named name: String, from object: Any) -> Any? {
+    private func regionSignature(_ points: [CGPoint]) -> String {
+        guard let first = points.first,
+              let last = points.last else {
+            return "empty"
+        }
+
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+
+        return [
+            String(points.count),
+            String(format: "%.2f", first.x),
+            String(format: "%.2f", first.y),
+            String(format: "%.2f", last.x),
+            String(format: "%.2f", last.y),
+            String(format: "%.2f", minX),
+            String(format: "%.2f", minY),
+            String(format: "%.2f", maxX),
+            String(format: "%.2f", maxY)
+        ].joined(separator: "|")
+    }
+
+    private func mirroredValue(named name: String, from object: Any) -> Any? {
         var mirror: Mirror? = Mirror(reflecting: object)
+
         while let current = mirror {
             for child in current.children where child.label == name {
                 return unwrapOptional(child.value)
             }
             mirror = current.superclassMirror
         }
+
         return nil
     }
 
-    private static func unwrapOptional(_ value: Any) -> Any? {
+    private func unwrapOptional(_ value: Any) -> Any? {
         let mirror = Mirror(reflecting: value)
         guard mirror.displayStyle == .optional else { return value }
         return mirror.children.first?.value
-    }
-
-    private static func defaultRegion(in bounds: CGRect) -> [CGPoint] {
-        let center = CGPoint(x: bounds.midX, y: bounds.midY * 0.98)
-        let rx = bounds.width * 0.34
-        let ry = bounds.height * 0.18
-        let count = 42
-
-        return (0..<count).map { index in
-            let t = CGFloat(index) / CGFloat(count) * .pi * 2
-            let wobble = 1 + 0.055 * sin(t * 5) + 0.025 * cos(t * 3)
-            return CGPoint(
-                x: center.x + cos(t) * rx * wobble,
-                y: center.y + sin(t) * ry * wobble
-            )
-        }
-    }
-}
-
-private extension UIView {
-    func viewWithAccessibilityIdentifier(_ identifier: String) -> UIView? {
-        if accessibilityIdentifier == identifier {
-            return self
-        }
-        for subview in subviews {
-            if let match = subview.viewWithAccessibilityIdentifier(identifier) {
-                return match
-            }
-        }
-        return nil
     }
 }
 
@@ -547,10 +353,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         configurationForConnecting connectingSceneSession: UISceneSession,
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
-        MemoryExpansionPrototypeLauncher.installWhenReady()
+        MemoryAMemoPreviewCoordinator.shared.installWhenReady()
+
         return UISceneConfiguration(
             name: "Default Configuration",
             sessionRole: connectingSceneSession.role
         )
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        MemoryAMemoPreviewCoordinator.shared.installWhenReady()
     }
 }
