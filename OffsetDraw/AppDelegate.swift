@@ -8,10 +8,8 @@ private enum MemoryExpansionVariant: CaseIterable {
 
     var title: String {
         switch self {
-        case .restrained:
-            return "Memory A"
-        case .expanded:
-            return "Memory B"
+        case .restrained: return "Memory A"
+        case .expanded: return "Memory B"
         }
     }
 
@@ -101,12 +99,12 @@ private enum MemoryExpansionRenderer {
         let coreMaskImage = makeMask(
             bounds: canvasBounds,
             points: points,
-            fillAlpha: 1
+            alpha: 1
         )
         let wideMaskImage = makeMask(
             bounds: canvasBounds,
             points: points,
-            fillAlpha: variant.wideMaskAlpha
+            alpha: variant.wideMaskAlpha
         )
 
         guard let coreMaskCI = CIImage(image: coreMaskImage),
@@ -156,7 +154,7 @@ private enum MemoryExpansionRenderer {
         }
 
         let full = UIImage(cgImage: fullCG)
-        let crop = bounds(for: points)
+        let crop = regionBounds(points)
             .insetBy(dx: -variant.cropPadding, dy: -variant.cropPadding)
             .intersection(canvasBounds)
             .integral
@@ -166,21 +164,20 @@ private enum MemoryExpansionRenderer {
               let cropped = full.cgImage?.cropping(to: crop) else {
             return full
         }
-
         return UIImage(cgImage: cropped)
     }
 
     private static func makeMask(
         bounds: CGRect,
         points: [CGPoint],
-        fillAlpha: CGFloat
+        alpha: CGFloat
     ) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
 
         return UIGraphicsImageRenderer(bounds: bounds, format: format).image { _ in
-            UIColor.white.withAlphaComponent(fillAlpha).setFill()
+            UIColor.white.withAlphaComponent(alpha).setFill()
             closedPath(points).fill()
         }
     }
@@ -190,18 +187,22 @@ private enum MemoryExpansionRenderer {
         guard let first = points.first else { return path }
         path.move(to: first)
 
-        if points.count > 2 {
-            for index in 1..<points.count {
-                let previous = points[index - 1]
-                let current = points[index]
-                let midpoint = CGPoint(
-                    x: (previous.x + current.x) * 0.5,
-                    y: (previous.y + current.y) * 0.5
-                )
-                path.addQuadCurve(to: midpoint, controlPoint: previous)
+        guard points.count > 2 else {
+            if let last = points.last {
+                path.addLine(to: last)
             }
-        } else if let last = points.last {
-            path.addLine(to: last)
+            path.close()
+            return path
+        }
+
+        for index in 1..<points.count {
+            let previous = points[index - 1]
+            let current = points[index]
+            let midpoint = CGPoint(
+                x: (previous.x + current.x) * 0.5,
+                y: (previous.y + current.y) * 0.5
+            )
+            path.addQuadCurve(to: midpoint, controlPoint: previous)
         }
 
         if let last = points.last {
@@ -211,7 +212,7 @@ private enum MemoryExpansionRenderer {
         return path
     }
 
-    private static func bounds(for points: [CGPoint]) -> CGRect {
+    private static func regionBounds(_ points: [CGPoint]) -> CGRect {
         guard let first = points.first else { return .zero }
         var minX = first.x
         var maxX = first.x
@@ -238,10 +239,10 @@ private enum MemoryExpansionRenderer {
         radius: Float,
         extent: CGRect
     ) -> CIImage? {
-        let blur = CIFilter.gaussianBlur()
-        blur.inputImage = image
-        blur.radius = radius
-        return blur.outputImage?.cropped(to: extent)
+        let filter = CIFilter.gaussianBlur()
+        filter.inputImage = image
+        filter.radius = radius
+        return filter.outputImage?.cropped(to: extent)
     }
 
     private static func blend(
@@ -249,11 +250,11 @@ private enum MemoryExpansionRenderer {
         background: CIImage,
         mask: CIImage
     ) -> CIImage? {
-        let blend = CIFilter.blendWithAlphaMask()
-        blend.inputImage = source
-        blend.backgroundImage = background
-        blend.maskImage = mask
-        return blend.outputImage
+        let filter = CIFilter.blendWithAlphaMask()
+        filter.inputImage = source
+        filter.backgroundImage = background
+        filter.maskImage = mask
+        return filter.outputImage
     }
 
     private static func warmHalo(
@@ -281,9 +282,7 @@ private final class MemoryExpansionComparisonViewController: UIViewController {
         super.init(nibName: nil, bundle: nil)
     }
 
-    required init?(coder: NSCoder) {
-        nil
-    }
+    required init?(coder: NSCoder) { nil }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -314,7 +313,7 @@ private final class MemoryExpansionComparisonViewController: UIViewController {
         intro.numberOfLines = 0
         intro.font = .systemFont(ofSize: 15)
         intro.textColor = .secondaryLabel
-        intro.text = "Same paper · same region · only the outward memory context changes. Compare how much surrounding material should remain visible before it fades away."
+        intro.text = "Same paper · same region. Only the amount of outward memory context changes."
         stack.addArrangedSubview(intro)
 
         for variant in MemoryExpansionVariant.allCases {
@@ -364,9 +363,7 @@ private final class MemoryExpansionComparisonViewController: UIViewController {
             variant: variant
         )
 
-        card.addSubview(title)
-        card.addSubview(subtitle)
-        card.addSubview(preview)
+        [title, subtitle, preview].forEach(card.addSubview)
 
         NSLayoutConstraint.activate([
             title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
@@ -391,22 +388,34 @@ private final class MemoryExpansionComparisonViewController: UIViewController {
 private enum MemoryExpansionPrototypeLauncher {
     private static let buttonIdentifier = "memory-expansion-compare-button"
 
-    static func installIfNeeded() {
+    static func installWhenReady(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            if installIfPossible() { return }
+            if attempt < 14 {
+                installWhenReady(attempt: attempt + 1)
+            }
+        }
+    }
+
+    @discardableResult
+    private static func installIfPossible() -> Bool {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive }),
+            .first(where: { $0.activationState != .unattached }),
               let window = scene.windows.first(where: { $0.isKeyWindow }),
-              let root = window.rootViewController else {
-            return
+              let root = window.rootViewController,
+              root.viewIfLoaded?.window != nil else {
+            return false
         }
 
-        guard root.view.viewWithAccessibilityIdentifier(buttonIdentifier) == nil else {
-            return
+        if root.view.viewWithAccessibilityIdentifier(buttonIdentifier) != nil {
+            return true
         }
 
         let button = UIButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.accessibilityIdentifier = buttonIdentifier
+
         var config = UIButton.Configuration.filled()
         config.title = "A/B"
         config.image = UIImage(systemName: "arrow.left.and.right")
@@ -442,12 +451,16 @@ private enum MemoryExpansionPrototypeLauncher {
             button.widthAnchor.constraint(equalToConstant: 66),
             button.heightAnchor.constraint(equalToConstant: 42)
         ])
+        return true
     }
 
     private static func comparisonInput(
         from viewController: UIViewController
     ) -> (source: UIImage, bounds: CGRect, points: [CGPoint])? {
-        guard let paperImageView = mirroredValue(named: "paperImageView", from: viewController) as? UIImageView,
+        guard let paperImageView = mirroredValue(
+            named: "paperImageView",
+            from: viewController
+        ) as? UIImageView,
               paperImageView.bounds.width > 0,
               paperImageView.bounds.height > 0 else {
             return nil
@@ -456,14 +469,20 @@ private enum MemoryExpansionPrototypeLauncher {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
-        let source = UIGraphicsImageRenderer(bounds: paperImageView.bounds, format: format).image { context in
+        let source = UIGraphicsImageRenderer(
+            bounds: paperImageView.bounds,
+            format: format
+        ).image { renderer in
             UIColor.clear.setFill()
-            context.fill(paperImageView.bounds)
-            paperImageView.layer.render(in: context.cgContext)
+            renderer.fill(paperImageView.bounds)
+            paperImageView.layer.render(in: renderer.cgContext)
         }
 
         let points: [CGPoint]
-        if let latest = mirroredValue(named: "latestRegion", from: viewController) as? [CGPoint],
+        if let latest = mirroredValue(
+            named: "latestRegion",
+            from: viewController
+        ) as? [CGPoint],
            latest.count > 2 {
             points = latest
         } else {
@@ -528,12 +547,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         configurationForConnecting connectingSceneSession: UISceneSession,
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
-        UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        DispatchQueue.main.async {
-            MemoryExpansionPrototypeLauncher.installIfNeeded()
-        }
+        MemoryExpansionPrototypeLauncher.installWhenReady()
+        return UISceneConfiguration(
+            name: "Default Configuration",
+            sessionRole: connectingSceneSession.role
+        )
     }
 }
