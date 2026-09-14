@@ -20,6 +20,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>OffsetDraw uses the camera to capture your paper notes for annotation.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>OffsetDraw lets you choose a paper note photo to annotate.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>OffsetDraw saves exported drawings to your photo library.</string>
 	<key>UIApplicationSceneManifest</key>
