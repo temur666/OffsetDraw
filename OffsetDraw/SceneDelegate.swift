@@ -11,19 +11,33 @@ private struct PaperStroke {
     let points: [CGPoint]
 }
 
-private enum MemoCaptureState {
+private struct PaperRegion {
+    let id: Int
+    let points: [CGPoint]
+}
+
+private enum MemoEditorState {
     case idle
-    case draft
+    case editing
     case saving
 }
 
 private final class PaperAnnotationView: UIView {
     var selectedTool: PaperTool = .region
-    var onRegionCommitted: (([CGPoint]) -> Void)?
+    var onRegionCreated: ((PaperRegion) -> Void)?
+    var onRegionTapped: ((PaperRegion) -> Void)?
 
     private var strokes: [PaperStroke] = []
-    private var region: [CGPoint]?
+    private var regions: [PaperRegion] = []
     private var active: [CGPoint] = []
+    private var nextRegionID = 1
+
+    private let regionColor = UIColor(
+        red: 0.055,
+        green: 0.19,
+        blue: 0.48,
+        alpha: 1
+    )
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -37,14 +51,14 @@ private final class PaperAnnotationView: UIView {
 
     func clearAll() {
         strokes.removeAll()
-        region = nil
+        regions.removeAll()
         active.removeAll()
+        nextRegionID = 1
         setNeedsDisplay()
     }
 
-    func clearRegion() {
-        region = nil
-        active.removeAll()
+    func removeRegion(id: Int) {
+        regions.removeAll { $0.id == id }
         setNeedsDisplay()
     }
 
@@ -86,21 +100,32 @@ private final class PaperAnnotationView: UIView {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard !active.isEmpty else { return }
+        let finished = active
+        active.removeAll()
+
+        if isTap(finished),
+           let region = region(at: finished.last ?? .zero) {
+            onRegionTapped?(region)
+            setNeedsDisplay()
+            return
+        }
 
         switch selectedTool {
         case .pen, .highlighter:
-            if active.count > 1 {
-                strokes.append(PaperStroke(tool: selectedTool, points: active))
+            if finished.count > 1 {
+                strokes.append(PaperStroke(tool: selectedTool, points: finished))
             }
+
         case .region:
-            let regionBounds = Self.bounds(for: active)
+            let regionBounds = Self.bounds(for: finished)
             if regionBounds.width > 24, regionBounds.height > 24 {
-                region = active
-                onRegionCommitted?(active)
+                let region = PaperRegion(id: nextRegionID, points: finished)
+                nextRegionID += 1
+                regions.append(region)
+                onRegionCreated?(region)
             }
         }
 
-        active.removeAll()
         setNeedsDisplay()
     }
 
@@ -114,17 +139,17 @@ private final class PaperAnnotationView: UIView {
 
         renderContentAnnotations(in: context)
 
-        if let region {
-            drawDimOutside(region, in: context)
-            drawRegion(region, closed: true, alpha: 0.8, in: context)
+        for region in regions {
+            drawSavedRegion(region, in: context)
         }
 
         guard active.count > 1 else { return }
         switch selectedTool {
         case .pen, .highlighter:
             draw(PaperStroke(tool: selectedTool, points: active), in: context)
+
         case .region:
-            drawRegion(active, closed: false, alpha: 0.72, in: context)
+            drawActiveRegion(active, in: context)
         }
     }
 
@@ -157,6 +182,25 @@ private final class PaperAnnotationView: UIView {
         )
     }
 
+    private func isTap(_ points: [CGPoint]) -> Bool {
+        let gestureBounds = Self.bounds(for: points)
+        return gestureBounds.width < 12 && gestureBounds.height < 12
+    }
+
+    private func region(at point: CGPoint) -> PaperRegion? {
+        for region in regions.reversed() {
+            let badge = badgeCenter(for: region.points)
+            if hypot(point.x - badge.x, point.y - badge.y) <= 20 {
+                return region
+            }
+
+            if Self.closedPath(region.points).contains(point) {
+                return region
+            }
+        }
+        return nil
+    }
+
     private func draw(_ stroke: PaperStroke, in context: CGContext) {
         guard stroke.points.count > 1 else { return }
 
@@ -169,10 +213,12 @@ private final class PaperAnnotationView: UIView {
             context.setBlendMode(.normal)
             context.setStrokeColor(UIColor.label.withAlphaComponent(0.92).cgColor)
             context.setLineWidth(3.2)
+
         case .highlighter:
             context.setBlendMode(.multiply)
             context.setStrokeColor(UIColor.systemYellow.withAlphaComponent(0.34).cgColor)
             context.setLineWidth(19)
+
         case .region:
             break
         }
@@ -181,42 +227,79 @@ private final class PaperAnnotationView: UIView {
         context.restoreGState()
     }
 
-    private func drawRegion(
-        _ points: [CGPoint],
-        closed: Bool,
-        alpha: CGFloat,
-        in context: CGContext
-    ) {
+    private func drawActiveRegion(_ points: [CGPoint], in context: CGContext) {
         guard points.count > 1 else { return }
 
-        let path = Self.smoothPath(points)
-        if closed { path.close() }
-
         context.saveGState()
-        context.setBlendMode(.multiply)
+        context.setBlendMode(.normal)
         context.setLineCap(.round)
         context.setLineJoin(.round)
-
-        context.setStrokeColor(UIColor.systemYellow.withAlphaComponent(alpha * 0.28).cgColor)
-        context.setLineWidth(25)
-        context.addPath(path.cgPath)
-        context.strokePath()
-
-        context.setStrokeColor(UIColor.systemYellow.withAlphaComponent(alpha * 0.62).cgColor)
-        context.setLineWidth(13)
-        context.addPath(path.cgPath)
+        context.setStrokeColor(regionColor.withAlphaComponent(0.82).cgColor)
+        context.setLineWidth(10)
+        context.addPath(Self.smoothPath(points).cgPath)
         context.strokePath()
         context.restoreGState()
     }
 
-    private func drawDimOutside(_ points: [CGPoint], in context: CGContext) {
-        guard points.count > 2 else { return }
+    private func drawSavedRegion(_ region: PaperRegion, in context: CGContext) {
+        let path = Self.closedPath(region.points)
 
-        let outside = UIBezierPath(rect: bounds)
-        outside.append(Self.closedPath(points))
-        outside.usesEvenOddFillRule = true
-        UIColor.black.withAlphaComponent(0.14).setFill()
-        outside.fill()
+        context.saveGState()
+        context.setBlendMode(.normal)
+        context.setFillColor(regionColor.withAlphaComponent(0.16).cgColor)
+        context.addPath(path.cgPath)
+        context.fillPath()
+
+        context.setStrokeColor(regionColor.withAlphaComponent(0.92).cgColor)
+        context.setLineWidth(7)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.addPath(path.cgPath)
+        context.strokePath()
+        context.restoreGState()
+
+        drawBadge(for: region, in: context)
+    }
+
+    private func badgeCenter(for points: [CGPoint]) -> CGPoint {
+        let regionBounds = Self.bounds(for: points)
+        let radius: CGFloat = 14
+
+        return CGPoint(
+            x: min(max(regionBounds.maxX + 7, radius), bounds.width - radius),
+            y: min(max(regionBounds.minY - 7, radius), bounds.height - radius)
+        )
+    }
+
+    private func drawBadge(for region: PaperRegion, in context: CGContext) {
+        let center = badgeCenter(for: region.points)
+        let radius: CGFloat = 14
+        let circle = CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+
+        context.saveGState()
+        context.setFillColor(regionColor.cgColor)
+        context.fillEllipse(in: circle)
+        context.restoreGState()
+
+        let number = "\(region.id)" as NSString
+        let font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor.white
+        ]
+        let size = number.size(withAttributes: attributes)
+        number.draw(
+            at: CGPoint(
+                x: center.x - size.width * 0.5,
+                y: center.y - size.height * 0.5 - 0.5
+            ),
+            withAttributes: attributes
+        )
     }
 
     private func strokePath(_ points: [CGPoint], in context: CGContext) {
@@ -325,8 +408,9 @@ private final class PaperMemoDemoViewController: UIViewController,
 
     private var sourceImage = PaperMemoDemoViewController.makeSamplePaperImage()
     private var needsPaperLayout = true
-    private var latestRegion: [CGPoint]?
-    private var memoState: MemoCaptureState = .idle
+    private var memoState: MemoEditorState = .idle
+    private var activeRegion: PaperRegion?
+    private var notesByRegionID: [Int: String] = [:]
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -380,8 +464,11 @@ private final class PaperMemoDemoViewController: UIViewController,
         annotationView.clipsToBounds = true
         annotationView.layer.cornerRadius = 18
         annotationView.layer.cornerCurve = .continuous
-        annotationView.onRegionCommitted = { [weak self] points in
-            self?.beginMemoDraft(points)
+        annotationView.onRegionCreated = { _ in
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        annotationView.onRegionTapped = { [weak self] region in
+            self?.openMemo(for: region)
         }
         paperContainer.addSubview(annotationView)
 
@@ -487,7 +574,7 @@ private final class PaperMemoDemoViewController: UIViewController,
         view.addSubview(memoCard)
 
         memoTitle.translatesAutoresizingMaskIntoConstraints = false
-        memoTitle.text = "✦  Memo Draft"
+        memoTitle.text = "Memo"
         memoTitle.font = .systemFont(ofSize: 16, weight: .semibold)
 
         memoMenu.translatesAutoresizingMaskIntoConstraints = false
@@ -613,18 +700,10 @@ private final class PaperMemoDemoViewController: UIViewController,
         sourceImage = normalizedAndDownscaled(image)
         paperImageView.image = sourceImage
         annotationView.clearAll()
-        latestRegion = nil
+        notesByRegionID.removeAll()
+        activeRegion = nil
         memoState = .idle
-        memoCard.isHidden = true
-        memoCard.alpha = 1
-        memoCard.transform = .identity
-        memoPreview.image = nil
-        noteField.text = nil
-        noteField.resignFirstResponder()
-        saveButton.configuration = defaultSaveConfiguration(title: "Save")
-        saveButton.isEnabled = true
-        annotationView.isUserInteractionEnabled = true
-        toolbar.isUserInteractionEnabled = true
+        hideMemoCardImmediately()
         needsPaperLayout = true
         view.setNeedsLayout()
     }
@@ -636,35 +715,29 @@ private final class PaperMemoDemoViewController: UIViewController,
         regionButton.setActive(tool == .region)
     }
 
-    private func beginMemoDraft(_ points: [CGPoint]) {
+    private func openMemo(for region: PaperRegion) {
         guard memoState != .saving else { return }
 
-        let startsNewDraft = memoState == .idle
-        latestRegion = points
-        memoState = .draft
-
-        if startsNewDraft {
-            noteField.text = nil
-        }
-
-        guard let source = paperSnapshot(),
-              let preview = MemoryAMemoRenderer.render(
-                source: source,
-                canvasBounds: annotationView.bounds,
-                points: points
-              ) else {
-            discardDraft(animated: false)
-            return
-        }
-
-        memoPreview.image = preview
-        memoTitle.text = "✦  Memo Draft"
+        activeRegion = region
+        memoState = .editing
+        noteField.text = notesByRegionID[region.id]
+        memoTitle.text = "Memo \(region.id)"
         saveButton.configuration = defaultSaveConfiguration(title: "Save")
         saveButton.isEnabled = true
+
+        if let source = paperSnapshot(),
+           let preview = MemoryAMemoRenderer.render(
+                source: source,
+                canvasBounds: annotationView.bounds,
+                points: region.points
+           ) {
+            memoPreview.image = preview
+        } else {
+            memoPreview.image = nil
+        }
+
         annotationView.isUserInteractionEnabled = false
         toolbar.isUserInteractionEnabled = false
-
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         presentMemoCardIfNeeded()
     }
 
@@ -755,16 +828,11 @@ private final class PaperMemoDemoViewController: UIViewController,
     @objc private func showMore() {
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
 
-        if memoState == .draft {
-            sheet.addAction(UIAlertAction(title: "Discard Memo Draft", style: .destructive) { [weak self] _ in
-                self?.discardDraft(animated: true)
-            })
-        }
-
         sheet.addAction(UIAlertAction(title: "Reset annotations", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            self.discardDraft(animated: false)
+            self.closeMemoEditor(animated: false)
             self.annotationView.clearAll()
+            self.notesByRegionID.removeAll()
         })
 
         sheet.addAction(UIAlertAction(title: "Use sample paper", style: .default) { [weak self] _ in
@@ -776,85 +844,59 @@ private final class PaperMemoDemoViewController: UIViewController,
     }
 
     @objc private func showMemoMenu() {
-        guard memoState == .draft else { return }
+        guard memoState == .editing,
+              let region = activeRegion else {
+            return
+        }
 
         let sheet = UIAlertController(
-            title: "Memo Draft",
+            title: "Memo \(region.id)",
             message: nil,
             preferredStyle: .actionSheet
         )
-        sheet.addAction(UIAlertAction(title: "Discard Draft", style: .destructive) { [weak self] _ in
-            self?.discardDraft(animated: true)
+
+        sheet.addAction(UIAlertAction(title: "Close", style: .default) { [weak self] _ in
+            self?.closeMemoEditor(animated: true)
         })
+
+        sheet.addAction(UIAlertAction(title: "Delete region", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            self.annotationView.removeRegion(id: region.id)
+            self.notesByRegionID.removeValue(forKey: region.id)
+            self.closeMemoEditor(animated: true)
+        })
+
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(sheet, animated: true)
     }
 
     @objc private func saveMemo() {
-        guard memoState == .draft,
-              latestRegion != nil else {
+        guard memoState == .editing,
+              let region = activeRegion else {
             return
         }
 
+        notesByRegionID[region.id] = noteField.text ?? ""
         memoState = .saving
         saveButton.isEnabled = false
+
         var saved = defaultSaveConfiguration(title: "Saved ✓")
         saved.baseBackgroundColor = .systemGreen
         saveButton.configuration = saved
         noteField.resignFirstResponder()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
-            guard let self else { return }
-
-            UIView.animate(
-                withDuration: 0.24,
-                delay: 0,
-                options: [.curveEaseIn, .beginFromCurrentState]
-            ) {
-                self.memoCard.alpha = 0
-                self.memoCard.transform = CGAffineTransform(
-                    translationX: 0,
-                    y: 18
-                ).scaledBy(x: 0.97, y: 0.97)
-            } completion: { _ in
-                self.finishMemoSave()
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+            self?.closeMemoEditor(animated: true)
         }
     }
 
-    private func finishMemoSave() {
-        annotationView.clearRegion()
-        latestRegion = nil
-        memoState = .idle
-        memoCard.isHidden = true
-        memoCard.alpha = 1
-        memoCard.transform = .identity
-        memoPreview.image = nil
-        memoTitle.text = "✦  Memo Draft"
-        noteField.text = nil
-        saveButton.configuration = defaultSaveConfiguration(title: "Save")
-        saveButton.isEnabled = true
-        annotationView.isUserInteractionEnabled = true
-        toolbar.isUserInteractionEnabled = true
-    }
-
-    private func discardDraft(animated: Bool) {
-        guard memoState != .saving else { return }
-
+    private func closeMemoEditor(animated: Bool) {
         let cleanup = { [weak self] in
             guard let self else { return }
-            self.annotationView.clearRegion()
-            self.latestRegion = nil
+            self.activeRegion = nil
             self.memoState = .idle
-            self.memoCard.isHidden = true
-            self.memoCard.alpha = 1
-            self.memoCard.transform = .identity
-            self.memoPreview.image = nil
-            self.noteField.text = nil
-            self.noteField.resignFirstResponder()
-            self.saveButton.configuration = self.defaultSaveConfiguration(title: "Save")
-            self.saveButton.isEnabled = true
+            self.hideMemoCardImmediately()
             self.annotationView.isUserInteractionEnabled = true
             self.toolbar.isUserInteractionEnabled = true
         }
@@ -865,13 +907,30 @@ private final class PaperMemoDemoViewController: UIViewController,
         }
 
         UIView.animate(
-            withDuration: 0.2,
+            withDuration: 0.22,
             animations: {
                 self.memoCard.alpha = 0
-                self.memoCard.transform = CGAffineTransform(translationX: 0, y: 16)
+                self.memoCard.transform = CGAffineTransform(
+                    translationX: 0,
+                    y: 16
+                ).scaledBy(x: 0.98, y: 0.98)
             },
             completion: { _ in cleanup() }
         )
+    }
+
+    private func hideMemoCardImmediately() {
+        memoCard.isHidden = true
+        memoCard.alpha = 1
+        memoCard.transform = .identity
+        memoPreview.image = nil
+        memoTitle.text = "Memo"
+        noteField.text = nil
+        noteField.resignFirstResponder()
+        saveButton.configuration = defaultSaveConfiguration(title: "Save")
+        saveButton.isEnabled = true
+        annotationView.isUserInteractionEnabled = true
+        toolbar.isUserInteractionEnabled = true
     }
 
     private func presentPicker(_ source: UIImagePickerController.SourceType) {
