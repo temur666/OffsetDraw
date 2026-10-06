@@ -463,7 +463,7 @@ private final class LiftablePhotoView: TransformableImageView {
     }
 
     func subjectImage(at point: CGPoint) -> UIImage? {
-        guard let analysis, displayedImageRect.contains(point) else {
+        guard let analysis = subjectAnalysis, displayedImageRect.contains(point) else {
             return nil
         }
 
