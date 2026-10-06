@@ -1,7 +1,6 @@
 import UIKit
 import PhotosUI
-import Vision
-import CoreImage
+import VisionKit
 
 final class DrawingNavigationController: UINavigationController, UINavigationControllerDelegate, UIGestureRecognizerDelegate {
     private let subjectStickerCoordinator = SubjectStickerCoordinator()
@@ -147,16 +146,18 @@ private final class SubjectStickerCoordinator: NSObject, PHPickerViewControllerD
     }
 }
 
-private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelegate {
+private final class SubjectStickerOverlayView: UIView {
     var onImportPhoto: (() -> Void)?
 
     private let importButtonContainer = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     private let importButton = UIButton(type: .system)
     private let statusLabel = UILabel()
+
     private weak var activeLiftSource: LiftablePhotoView?
     private var activeLiftPreview: UIImageView?
     private var activeLiftImage: UIImage?
     private var activeLiftPreviewSize: CGSize = .zero
+    private var liftRequestID: UUID?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -186,19 +187,29 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
     func addPhoto(_ image: UIImage) {
         let normalizedImage = image.normalizedForSubjectLifting()
         let photoView = LiftablePhotoView(image: normalizedImage)
-        photoView.onDelete = { [weak photoView] in
-            photoView?.removeFromSuperview()
+
+        photoView.onAnalysisStateChanged = { [weak self] state in
+            switch state {
+            case .analyzing:
+                self?.showStatus("正在识别主体…")
+            case .ready(let count):
+                self?.showStatus(count > 0 ? "已识别主体，长按即可抠图" : "这张图片没有识别到可抠主体")
+            case .unsupported:
+                self?.showStatus("当前设备不支持原生抠图")
+            case .failed:
+                self?.showStatus("主体识别失败")
+            }
         }
-        photoView.prepareSubjectAnalysis()
+
         addSubview(photoView)
-        bringSubviewToFront(importButtonContainer)
-        bringSubviewToFront(statusLabel)
+        bringControlsToFront()
 
         let availableWidth = max(bounds.width - 64, 180)
         let maxWidth = min(availableWidth, 300)
         let maxHeight = min(max(bounds.height * 0.42, 220), 380)
         let fittedSize = normalizedImage.size.aspectFit(in: CGSize(width: maxWidth, height: maxHeight))
         photoView.bounds = CGRect(origin: .zero, size: fittedSize)
+
         let topInset = safeAreaInsets.top + 74
         photoView.center = CGPoint(
             x: bounds.midX,
@@ -206,14 +217,14 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
         )
 
         let liftRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleSubjectLift(_:)))
-        liftRecognizer.minimumPressDuration = 0.22
-        liftRecognizer.allowableMovement = 12
-        liftRecognizer.delegate = self
-        liftRecognizer.cancelsTouchesInView = true
+        liftRecognizer.minimumPressDuration = 0.35
+        liftRecognizer.allowableMovement = 18
+        liftRecognizer.cancelsTouchesInView = false
+        liftRecognizer.delegate = photoView
         photoView.addGestureRecognizer(liftRecognizer)
         photoView.panRecognizer.require(toFail: liftRecognizer)
 
-        showStatus("Hold a subject, then drag it out")
+        photoView.prepareSubjectAnalysis()
     }
 
     @objc private func importTapped() {
@@ -229,19 +240,37 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
         case .began:
             guard sourceView.isSubjectAnalysisReady else {
                 sourceView.prepareSubjectAnalysis()
-                showStatus("Preparing subject…")
-                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                showStatus("主体还在识别，稍后再长按一次")
                 return
             }
 
+            let requestID = UUID()
+            liftRequestID = requestID
+            activeLiftSource = sourceView
             let sourcePoint = recognizer.location(in: sourceView)
-            guard let subjectImage = sourceView.subjectImage(at: sourcePoint) else {
-                showStatus("No subject here")
-                UINotificationFeedbackGenerator().notificationOccurred(.warning)
-                return
-            }
 
-            beginLift(subjectImage, from: sourceView, at: recognizer.location(in: self))
+            sourceView.requestSubjectImage(at: sourcePoint) { [weak self, weak recognizer, weak sourceView] subjectImage in
+                guard let self,
+                      let recognizer,
+                      let sourceView,
+                      self.liftRequestID == requestID,
+                      self.activeLiftSource === sourceView,
+                      recognizer.state == .began || recognizer.state == .changed else {
+                    return
+                }
+
+                guard let subjectImage else {
+                    self.showStatus("这里没有识别到主体")
+                    self.resetActiveLift()
+                    return
+                }
+
+                self.beginLift(
+                    subjectImage,
+                    from: sourceView,
+                    at: recognizer.location(in: self)
+                )
+            }
 
         case .changed:
             guard activeLiftSource === sourceView else {
@@ -250,7 +279,7 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
             activeLiftPreview?.center = recognizer.location(in: self)
 
         case .ended:
-            guard activeLiftSource === sourceView else {
+            guard activeLiftSource === sourceView, activeLiftPreview != nil else {
                 resetActiveLift()
                 return
             }
@@ -265,7 +294,8 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
     }
 
     private func beginLift(_ subjectImage: UIImage, from sourceView: LiftablePhotoView, at point: CGPoint) {
-        resetActiveLift()
+        activeLiftPreview?.removeFromSuperview()
+
         let stickerImage = subjectImage.applyingStickerBorder()
         let imageRect = sourceView.displayedImageRect
         let sourceScale = sourceView.currentUniformScale
@@ -275,6 +305,7 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
             width: stickerImage.size.width * displayScale,
             height: stickerImage.size.height * displayScale
         )
+
         let maxDimension = max(previewSize.width, previewSize.height)
         if maxDimension > 280 {
             let factor = 280 / maxDimension
@@ -296,9 +327,9 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
         preview.layer.shadowRadius = 7
         preview.layer.shadowOffset = CGSize(width: 0, height: 3)
         preview.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+
         addSubview(preview)
-        bringSubviewToFront(importButtonContainer)
-        bringSubviewToFront(statusLabel)
+        bringControlsToFront()
 
         UIView.animate(
             withDuration: 0.14,
@@ -333,33 +364,48 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
             guard let self, let stickerView, let image = stickerView.image else {
                 return
             }
-            let duplicate = TransformableImageView(image: image, kind: .sticker)
-            duplicate.bounds = stickerView.bounds
-            duplicate.center = CGPoint(x: stickerView.center.x + 24, y: stickerView.center.y + 24)
-            duplicate.transform = stickerView.transform
-            duplicate.onDelete = { [weak duplicate] in duplicate?.removeFromSuperview() }
+            let duplicate = self.makeDuplicate(of: stickerView, image: image)
             self.addSubview(duplicate)
-            self.bringSubviewToFront(self.importButtonContainer)
-            self.bringSubviewToFront(self.statusLabel)
+            self.bringControlsToFront()
         }
+
         addSubview(stickerView)
-        bringSubviewToFront(importButtonContainer)
-        bringSubviewToFront(statusLabel)
+        bringControlsToFront()
 
         activeLiftPreview?.removeFromSuperview()
         activeLiftPreview = nil
+        activeLiftSource?.clearSubjectHighlight()
         activeLiftSource = nil
         activeLiftImage = nil
         activeLiftPreviewSize = .zero
+        liftRequestID = nil
+
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        showStatus("已生成贴纸")
+    }
+
+    private func makeDuplicate(of stickerView: TransformableImageView, image: UIImage) -> TransformableImageView {
+        let duplicate = TransformableImageView(image: image, kind: .sticker)
+        duplicate.bounds = stickerView.bounds
+        duplicate.center = CGPoint(x: stickerView.center.x + 24, y: stickerView.center.y + 24)
+        duplicate.transform = stickerView.transform
+        duplicate.onDelete = { [weak duplicate] in duplicate?.removeFromSuperview() }
+        return duplicate
     }
 
     private func resetActiveLift() {
         activeLiftPreview?.removeFromSuperview()
         activeLiftPreview = nil
+        activeLiftSource?.clearSubjectHighlight()
         activeLiftSource = nil
         activeLiftImage = nil
         activeLiftPreviewSize = .zero
+        liftRequestID = nil
+    }
+
+    private func bringControlsToFront() {
+        bringSubviewToFront(importButtonContainer)
+        bringSubviewToFront(statusLabel)
     }
 
     private func configure() {
@@ -381,7 +427,7 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         statusLabel.textColor = .secondaryLabel
-        statusLabel.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.9)
+        statusLabel.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.92)
         statusLabel.textAlignment = .center
         statusLabel.layer.cornerRadius = 14
         statusLabel.clipsToBounds = true
@@ -402,7 +448,7 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
             statusLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             statusLabel.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 18),
             statusLabel.heightAnchor.constraint(equalToConstant: 28),
-            statusLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.72)
+            statusLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.8)
         ])
     }
 
@@ -410,27 +456,26 @@ private final class SubjectStickerOverlayView: UIView, UIGestureRecognizerDelega
         statusLabel.layer.removeAllAnimations()
         statusLabel.text = "  \(text)  "
         statusLabel.alpha = 1
-        UIView.animate(withDuration: 0.22, delay: 1.25, options: [.curveEaseOut, .allowUserInteraction]) {
+        UIView.animate(withDuration: 0.22, delay: 1.6, options: [.curveEaseOut, .allowUserInteraction]) {
             self.statusLabel.alpha = 0
         }
-    }
-
-    func gestureRecognizer(
-        _ gestureRecognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
-    ) -> Bool {
-        false
     }
 }
 
 private final class LiftablePhotoView: TransformableImageView {
-    private let analysisQueue = DispatchQueue(label: "offsetdraw.subject-analysis", qos: .userInitiated)
-    private var subjectAnalysis: SubjectAnalysis?
-    private var isAnalyzingSubjects = false
-
-    var isSubjectAnalysisReady: Bool {
-        subjectAnalysis != nil
+    enum AnalysisState {
+        case analyzing
+        case ready(Int)
+        case unsupported
+        case failed
     }
+
+    var onAnalysisStateChanged: ((AnalysisState) -> Void)?
+
+    private let analyzer = ImageAnalyzer()
+    private let analysisInteraction = ImageAnalysisInteraction()
+    private var isAnalyzingSubjects = false
+    private(set) var isSubjectAnalysisReady = false
 
     var displayedImageRect: CGRect {
         guard let image else {
@@ -441,6 +486,10 @@ private final class LiftablePhotoView: TransformableImageView {
 
     init(image: UIImage) {
         super.init(image: image, kind: .photo)
+
+        analysisInteraction.preferredInteractionTypes = [.imageSubject]
+        analysisInteraction.setSupplementaryInterfaceHidden(true, animated: false)
+        addInteraction(analysisInteraction)
     }
 
     required init?(coder: NSCoder) {
@@ -448,30 +497,70 @@ private final class LiftablePhotoView: TransformableImageView {
     }
 
     func prepareSubjectAnalysis() {
-        guard subjectAnalysis == nil, !isAnalyzingSubjects, let image else {
+        guard !isSubjectAnalysisReady, !isAnalyzingSubjects, let image else {
+            return
+        }
+
+        guard ImageAnalyzer.isSupported else {
+            onAnalysisStateChanged?(.unsupported)
             return
         }
 
         isAnalyzingSubjects = true
-        analysisQueue.async { [weak self] in
-            let analysis = try? SubjectAnalysis(image: image)
-            DispatchQueue.main.async {
-                self?.subjectAnalysis = analysis
-                self?.isAnalyzingSubjects = false
+        onAnalysisStateChanged?(.analyzing)
+
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                let configuration = ImageAnalyzer.Configuration([.visualLookUp])
+                let analysis = try await analyzer.analyze(image, configuration: configuration)
+                analysisInteraction.analysis = analysis
+
+                let subjects = await analysisInteraction.subjects
+                isSubjectAnalysisReady = true
+                isAnalyzingSubjects = false
+                onAnalysisStateChanged?(.ready(subjects.count))
+            } catch {
+                isAnalyzingSubjects = false
+                isSubjectAnalysisReady = false
+                onAnalysisStateChanged?(.failed)
             }
         }
     }
 
-    func subjectImage(at point: CGPoint) -> UIImage? {
-        guard let analysis = subjectAnalysis, displayedImageRect.contains(point) else {
-            return nil
+    func requestSubjectImage(at point: CGPoint, completion: @escaping (UIImage?) -> Void) {
+        guard isSubjectAnalysisReady else {
+            completion(nil)
+            return
         }
 
-        let normalizedPoint = CGPoint(
-            x: (point.x - displayedImageRect.minX) / max(displayedImageRect.width, 1),
-            y: 1 - (point.y - displayedImageRect.minY) / max(displayedImageRect.height, 1)
-        )
-        return analysis.subjectImage(at: normalizedPoint)
+        Task { @MainActor [weak self] in
+            guard let self else {
+                completion(nil)
+                return
+            }
+
+            guard let subject = await analysisInteraction.subject(at: point) else {
+                completion(nil)
+                return
+            }
+
+            analysisInteraction.highlightedSubjects = [subject]
+
+            do {
+                let subjectImage = try await analysisInteraction.image(for: Set([subject]))
+                completion(subjectImage)
+            } catch {
+                completion(nil)
+            }
+        }
+    }
+
+    func clearSubjectHighlight() {
+        analysisInteraction.highlightedSubjects = []
     }
 }
 
@@ -529,10 +618,16 @@ private class TransformableImageView: UIImageView, UIGestureRecognizerDelegate, 
         panRecognizer.delegate = self
         pinchRecognizer.delegate = self
         rotationRecognizer.delegate = self
+
         addGestureRecognizer(panRecognizer)
         addGestureRecognizer(pinchRecognizer)
         addGestureRecognizer(rotationRecognizer)
-        addInteraction(UIContextMenuInteraction(delegate: self))
+
+        // Context menus also use a long press. Keep them off photos so VisionKit's
+        // native image-subject lift owns that gesture. Stickers can still use menus.
+        if kind == .sticker {
+            addInteraction(UIContextMenuInteraction(delegate: self))
+        }
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
@@ -577,13 +672,17 @@ private class TransformableImageView: UIImageView, UIGestureRecognizerDelegate, 
         _ interaction: UIContextMenuInteraction,
         configurationForMenuAtLocation location: CGPoint
     ) -> UIContextMenuConfiguration? {
-        UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+        guard kind == .sticker else {
+            return nil
+        }
+
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             guard let self else {
                 return UIMenu(children: [])
             }
 
             var actions: [UIAction] = []
-            if kind == .sticker, onDuplicate != nil {
+            if onDuplicate != nil {
                 actions.append(UIAction(title: "Duplicate", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
                     self?.onDuplicate?()
                 })
@@ -594,88 +693,6 @@ private class TransformableImageView: UIImageView, UIGestureRecognizerDelegate, 
             return UIMenu(children: actions)
         }
     }
-}
-
-private final class SubjectAnalysis {
-    private let observation: VNInstanceMaskObservation
-    private let requestHandler: VNImageRequestHandler
-    private let ciContext = CIContext(options: nil)
-
-    init(image: UIImage) throws {
-        guard let cgImage = image.cgImage else {
-            throw SubjectAnalysisError.missingCGImage
-        }
-
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:])
-        try handler.perform([request])
-        guard let observation = request.results?.first else {
-            throw SubjectAnalysisError.noSubjects
-        }
-
-        self.observation = observation
-        requestHandler = handler
-    }
-
-    func subjectImage(at normalizedPoint: CGPoint) -> UIImage? {
-        guard let instance = instanceIndex(at: normalizedPoint) else {
-            return nil
-        }
-
-        do {
-            let maskedBuffer = try observation.generateMaskedImage(
-                ofInstances: IndexSet(integer: instance),
-                from: requestHandler,
-                croppedToInstancesExtent: true
-            )
-            let ciImage = CIImage(cvPixelBuffer: maskedBuffer)
-            guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
-                return nil
-            }
-            return UIImage(cgImage: cgImage)
-        } catch {
-            return nil
-        }
-    }
-
-    private func instanceIndex(at normalizedPoint: CGPoint) -> Int? {
-        let buffer = observation.instanceMask
-        let width = CVPixelBufferGetWidth(buffer)
-        let height = CVPixelBufferGetHeight(buffer)
-        guard width > 0, height > 0 else {
-            return nil
-        }
-
-        let clampedPoint = CGPoint(
-            x: min(max(normalizedPoint.x, 0), 1),
-            y: min(max(normalizedPoint.y, 0), 1)
-        )
-        let imagePoint = VNImagePointForNormalizedPoint(clampedPoint, width - 1, height - 1)
-
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer {
-            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
-        }
-
-        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
-            return nil
-        }
-
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-        let x = min(max(Int(imagePoint.x), 0), width - 1)
-        let y = min(max(Int(imagePoint.y), 0), height - 1)
-        let label = baseAddress.load(fromByteOffset: y * bytesPerRow + x, as: UInt8.self)
-        let index = Int(label)
-        guard index > 0, observation.allInstances.contains(index) else {
-            return nil
-        }
-        return index
-    }
-}
-
-private enum SubjectAnalysisError: Error {
-    case missingCGImage
-    case noSubjects
 }
 
 private extension UIImage {
