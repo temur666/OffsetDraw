@@ -126,8 +126,19 @@ final class RollerballEngine {
     }
 
     func finish(time: Double, withPool: Bool = true) -> RollerballStroke? {
-        guard var result = stroke, let end = result.points.last else { return nil }
+        guard var result = stroke, let last = result.points.last else { return nil }
         let settings = result.settings
+
+        // The rendered centerline intentionally trails the raw Pencil samples while drawing.
+        // On lift, flush that small remainder to the last real input coordinate so short
+        // strokes, hooks and flicks are not visually cut off.
+        let endpointDistance = hypot(inputX - last.x, inputY - last.y)
+        if endpointDistance > 0.001 {
+            let finalDistance = strokeDistance + endpointDistance
+            result.points.append(RollerballPoint(x: inputX, y: inputY, time: time,
+                                                 radius: radius * startEnvelope(at: finalDistance)))
+        }
+
         if brushStyle == .thickEnds, result.points.count > 1 {
             var distances = [Double](repeating: 0, count: result.points.count)
             for index in 1..<result.points.count {
@@ -144,7 +155,7 @@ final class RollerballEngine {
                 result.points[index].radius = result.points[index].radius / originalEnvelope * endEnvelope
             }
         }
-        if withPool && settings.pool > 0 {
+        if withPool && settings.pool > 0, let end = result.points.last {
             let idle = min(1, max(0, (time - lastMotion) / 0.6))
             let slow = 1 / (1 + velocity / settings.speed)
             let deposit = settings.size * 0.5 * pressure * settings.pool * (0.35 + 0.65 * slow + 0.35 * idle)
