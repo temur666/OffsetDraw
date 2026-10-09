@@ -5,6 +5,9 @@ final class RollerballCanvasView: UIView {
     var brushStyle: RollerballBrushStyle = .rollerball {
         didSet { UserDefaults.standard.set(brushStyle.rawValue, forKey: "rollerball.brushStyle") }
     }
+    var correctionMode: RollerballCorrectionMode = .write {
+        didSet { UserDefaults.standard.set(correctionMode.rawValue, forKey: "rollerball.correctionMode") }
+    }
     var onChange: (() -> Void)?
     private(set) var strokes: [RollerballStroke] = []
     private var redoStack: [RollerballStroke] = []
@@ -31,6 +34,10 @@ final class RollerballCanvasView: UIView {
         if let rawValue = UserDefaults.standard.object(forKey: "rollerball.brushStyle") as? Int,
            let savedStyle = RollerballBrushStyle(rawValue: rawValue) {
             brushStyle = savedStyle
+        }
+        if let rawValue = UserDefaults.standard.object(forKey: "rollerball.correctionMode") as? Int,
+           let savedMode = RollerballCorrectionMode(rawValue: rawValue) {
+            correctionMode = savedMode
         }
         clockTarget.canvas = self
         NotificationCenter.default.addObserver(self, selector: #selector(interrupted),
@@ -181,7 +188,7 @@ final class RollerballCanvasView: UIView {
         predictedPoints.removeAll(keepingCapacity: true)
         let point = touch.location(in: self)
         engine.begin(x: point.x, y: point.y, time: touch.timestamp, pressure: pressure(touch),
-                     settings: settings, brushStyle: brushStyle)
+                     settings: settings, brushStyle: brushStyle, correctionMode: correctionMode)
         paintedPoints = 0
         paintActive()
         let link = CADisplayLink(target: clockTarget, selector: #selector(RollerballClockTarget.tick(_:)))
@@ -237,7 +244,7 @@ final class RollerballCanvasView: UIView {
         }
         strokes.append(stroke)
         redoStack.removeAll()
-        // Finalize the thick end cap and its taper before the stroke is committed.
+        // Rebuild once at lift so WRITE endpoint corrections replace the live raw geometry.
         rebuild()
         onChange?()
     }
