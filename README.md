@@ -2,6 +2,10 @@
 
 OffsetDraw is a UIKit iPhone drawing prototype focused on offset-tip slow drawing.
 
+## Rollerball experiment
+
+The default tab is an independent native rollerball canvas, with Wi-Fi browser tuning at `192.168.0.101:18765` by default. Start with `python3 tools/rollerball-remote/server.py`; see [setup and verification](tools/rollerball-remote/README.md). Existing experiments and documents are preserved.
+
 ## Current scope
 
 - Document home with adaptive thumbnails

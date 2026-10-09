@@ -15,6 +15,10 @@
 		1A0000060000000000000001 /* DrawingDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000170000000000000001 /* DrawingDocumentStore.swift */; };
 		1A0000070000000000000001 /* HomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000180000000000000001 /* HomeViewController.swift */; };
 		1A0000080000000000000001 /* CanvasExperimentViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000190000000000000001 /* CanvasExperimentViewController.swift */; };
+		2B0000000000000000000001 /* RollerballEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B0000100000000000000001 /* RollerballEngine.swift */; };
+		2B0000010000000000000001 /* RollerballCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B0000110000000000000001 /* RollerballCanvasView.swift */; };
+		2B0000020000000000000001 /* RollerballRemoteClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B0000120000000000000001 /* RollerballRemoteClient.swift */; };
+		2B0000030000000000000001 /* RollerballViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B0000130000000000000001 /* RollerballViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +32,10 @@
 		1A0000170000000000000001 /* DrawingDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingDocumentStore.swift; sourceTree = "<group>"; };
 		1A0000180000000000000001 /* HomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewController.swift; sourceTree = "<group>"; };
 		1A0000190000000000000001 /* CanvasExperimentViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasExperimentViewController.swift; sourceTree = "<group>"; };
+		2B0000100000000000000001 /* RollerballEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rollerball/RollerballEngine.swift; sourceTree = "<group>"; };
+		2B0000110000000000000001 /* RollerballCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rollerball/RollerballCanvasView.swift; sourceTree = "<group>"; };
+		2B0000120000000000000001 /* RollerballRemoteClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rollerball/RollerballRemoteClient.swift; sourceTree = "<group>"; };
+		2B0000130000000000000001 /* RollerballViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rollerball/RollerballViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,6 +68,10 @@
 				1A0000170000000000000001 /* DrawingDocumentStore.swift */,
 				1A0000180000000000000001 /* HomeViewController.swift */,
 				1A0000190000000000000001 /* CanvasExperimentViewController.swift */,
+				2B0000130000000000000001 /* RollerballViewController.swift */,
+				2B0000120000000000000001 /* RollerballRemoteClient.swift */,
+				2B0000110000000000000001 /* RollerballCanvasView.swift */,
+				2B0000100000000000000001 /* RollerballEngine.swift */,
 				1A0000160000000000000001 /* Info.plist */,
 			);
 			path = OffsetDraw;
@@ -150,6 +162,10 @@
 				1A0000060000000000000001 /* DrawingDocumentStore.swift in Sources */,
 				1A0000070000000000000001 /* HomeViewController.swift in Sources */,
 				1A0000080000000000000001 /* CanvasExperimentViewController.swift in Sources */,
+				2B0000030000000000000001 /* RollerballViewController.swift in Sources */,
+				2B0000020000000000000001 /* RollerballRemoteClient.swift in Sources */,
+				2B0000010000000000000001 /* RollerballCanvasView.swift in Sources */,
+				2B0000000000000000000001 /* RollerballEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

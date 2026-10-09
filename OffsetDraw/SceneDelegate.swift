@@ -85,8 +85,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 selectedImage: UIImage(systemName: "rectangle.grid.2x2.fill")
             )
 
+            let rollerballNavigation = UINavigationController(rootViewController: RollerballViewController())
+            rollerballNavigation.overrideUserInterfaceStyle = .light
+            rollerballNavigation.tabBarItem = UITabBarItem(
+                title: "走珠笔", image: UIImage(systemName: "pencil.tip"), selectedImage: UIImage(systemName: "pencil.tip")
+            )
+
             let tabBarController = UITabBarController()
-            tabBarController.viewControllers = [delayNavigation, canvasNavigation, worksNavigation]
+            tabBarController.viewControllers = [rollerballNavigation, delayNavigation, canvasNavigation, worksNavigation]
             tabBarController.selectedIndex = 0
 
             let window = UIWindow(windowScene: windowScene)
