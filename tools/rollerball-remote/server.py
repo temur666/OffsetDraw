@@ -10,8 +10,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
-DEFAULTS = dict(size=3.8, pressure=1, speed=240, power=2.6, response=25, pool=0.65, color='#203656')
-RANGES = dict(size=(1, 12), pressure=(0.1, 1), speed=(60, 1000), power=(1, 4), response=(5, 100), pool=(0, 1.5))
+DEFAULTS = dict(size=8, pressure=0.45, speed=240, power=2.6, response=25, pool=0.65, color='#203656')
+RANGES = dict(size=(1, 64), pressure=(0.1, 1), speed=(60, 1000), power=(1, 4), response=(5, 100), pool=(0, 1.5))
 STATIC = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/brush.js': ('brush.js', 'text/javascript; charset=utf-8'),
           '/remote.js': ('remote.js', 'text/javascript; charset=utf-8')}

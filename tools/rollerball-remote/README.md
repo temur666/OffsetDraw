@@ -22,9 +22,9 @@ App 默认打开独立「走珠笔」标签。旧的 Delay、Canvas、Works 及�
 
 - `OffsetDraw/Rollerball/` 是独立 UIKit 画布、纯 Swift 画笔模型、参数客户端和界面，无旧画笔依赖。
 - 原生逻辑点（pt）对应 HTML 的 CSS px，显示像素密度不参与速度/粗细计算。
-- 压力 × 默认直径给出基础直径；速度系数为 `0.3 + 0.7 / (1 + (v / speed)^power)`。使用原 HTML 的速度滤波、粗细响应、停笔恢复、圆形印迹间距、离笔积墨。手指固定压力，Pencil 用真实压力；松手时不读取归零压力，中断时不额外积墨。
+- 压力 × 默认直径给出基础直径；速度系数为 `0.3 + 0.7 / (1 + (v / speed)^power)`。使用原 HTML 的速度滤波、粗细响应、停笔恢复、圆形印迹间距、离笔积墨。手指使用固定压力，Pencil 对轻压应用柔和曲线；松手时不读取归零压力，中断时不额外积墨。
 - `brush.js` 从用户提供的 HTML 提取，保留参考试画算法；`remote.js` 负责串行防抖同步。当前笔画均锁定落笔参数。
-- `GET /api/settings` 获取完整参数；`PUT /api/settings` 替换完整参数。JSON 字段：`size, pressure, speed, power, response, pool, color`。严格验证范围、颜色和有限数字；失败不修改状态。
+- `GET /api/settings` 获取完整参数；`PUT /api/settings` 替换完整参数。JSON 字段：`size, pressure, speed, power, response, pool, color`。笔尖直径默认 8 pt、上限 64 pt；手指固定压力默认 45%，Apple Pencil 以 `max(20%, raw)^0.55` 校准轻压，避免轻触时笔迹过细。网页预览使用同样的压力曲线。严格验证范围、颜色和有限数字；失败不修改状态。
 - HTTP 服务仅暴露页面、两份脚本和参数接口。拒绝跨站 Origin 写入；不提供跨域 CORS。用于可信局域网调参，不做公网部署。
 
 ## 验证

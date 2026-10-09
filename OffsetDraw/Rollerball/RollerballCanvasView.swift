@@ -116,7 +116,10 @@ final class RollerballCanvasView: UIView {
 
     private func pressure(_ touch: UITouch) -> Double? {
         guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return nil }
-        return Double(touch.force / touch.maximumPossibleForce)
+        let rawPressure = min(1, max(0, Double(touch.force / touch.maximumPossibleForce)))
+        // Pencil force is perceptually very low in the first part of its range. Lift
+        // light strokes toward the finger-width baseline while retaining full pressure.
+        return pow(max(0.2, rawPressure), 0.55)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {

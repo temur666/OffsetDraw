@@ -42,7 +42,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(json.loads(self.request()[2]), changed)
 
     def test_invalid_settings_do_not_change_state(self):
-        for key, invalids in {'size': [0, 13, True, '4', None], 'speed': [0, 1001],
+        for key, invalids in {'size': [0, 65, True, '4', None], 'speed': [0, 1001],
                               'pressure': [-1, 1.1], 'pool': [-1, 1.6], 'color': ['red', '#123', 12],
                               'response': [0, 101], 'power': [0, 5]}.items():
             for invalid in invalids:

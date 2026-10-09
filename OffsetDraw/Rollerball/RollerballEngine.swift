@@ -2,8 +2,8 @@ import Foundation
 
 /// Logical points correspond to CSS pixels in the reference HTML, independent of display scale.
 struct RollerballSettings: Codable, Equatable {
-    var size: Double = 3.8
-    var pressure: Double = 1
+    var size: Double = 8
+    var pressure: Double = 0.45
     var speed: Double = 240
     var power: Double = 2.6
     var response: Double = 25
@@ -11,7 +11,7 @@ struct RollerballSettings: Codable, Equatable {
     var color: String = "#203656"
 
     var isValid: Bool {
-        let values = [(size, 1.0...12.0), (pressure, 0.1...1.0), (speed, 60.0...1000.0),
+        let values = [(size, 1.0...64.0), (pressure, 0.1...1.0), (speed, 60.0...1000.0),
                       (power, 1.0...4.0), (response, 5.0...100.0), (pool, 0.0...1.5)]
         return values.allSatisfy { $0.0.isFinite && $0.1.contains($0.0) }
             && color.range(of: "^#[0-9a-fA-F]{6}$", options: .regularExpression) != nil
@@ -41,7 +41,7 @@ struct RollerballStroke {
 final class RollerballEngine {
     private(set) var stroke: RollerballStroke?
     private(set) var velocity: Double = 0
-    private(set) var pressure: Double = 1
+    private(set) var pressure: Double = 0.45
     private(set) var radius: Double = 1.9
     private var previous: RollerballPoint?
     private var lastMotion: Double = 0

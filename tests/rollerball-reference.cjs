@@ -3,7 +3,7 @@ const fs = require('fs'), vm = require('vm');
 const source = fs.readFileSync('tools/rollerball-remote/brush.js', 'utf8');
 const context = new Proxy({}, { get: () => () => {} });
 const elements = new Map();
-const values = {size:3.8,pressure:1,speed:240,power:2.6,response:25,pool:.65};
+const values = {size:8,pressure:.45,speed:240,power:2.6,response:25,pool:.65};
 function element(id) {
   if (!elements.has(id)) elements.set(id, { value:values[id], style:{}, dataset:{},
     classList:{ toggle(){}, add(){}, remove(){} }, addEventListener(){},
@@ -26,12 +26,12 @@ const traces = [];
 for (const events of sequences) {
  sandbox.events = events;
  const trace = vm.runInContext(`(() => {
-   const p=events[0], usePressure=p.pressure!==undefined, pressure=usePressure?p.pressure:settings.pressure;
+   const p=events[0], usePressure=p.pressure!==undefined, pressure=usePressure?calibratedPressure(p.pressure):settings.pressure;
    const r=radiusAt(0,settings,pressure);
    active={id:1,color:ink,params:{...settings},usePressure,pressure,points:[{...p,r}],radius:r,velocity:0,prev:p,lastMotion:p.t,visualTime:p.t,pool:null};
    for(const e of events.slice(1)) {
      if(e.kind==='tick') tick(e.t);
-     else move({pointerId:1,clientX:e.x,clientY:e.y,timeStamp:e.t,pressure:e.pressure},e.pressure!==undefined);
+     else move({pointerId:1,clientX:e.x,clientY:e.y,timeStamp:e.t,pressure:e.pressure===undefined?undefined:calibratedPressure(e.pressure)},e.pressure!==undefined);
    }
    const endTime=events[events.length-1].t+30;
    const end=active.points[active.points.length-1];

@@ -2,12 +2,13 @@
 const $=id=>document.getElementById(id), canvas=$('canvas'),ctx=canvas.getContext('2d'),paper=$('paper');
 const layer=document.createElement('canvas'),lc=layer.getContext('2d');
 const historyCanvas=document.createElement('canvas'),hc=historyCanvas.getContext('2d'),stampCanvas=document.createElement('canvas'),sc=stampCanvas.getContext('2d');
-const defaults={size:3.8,pressure:1,speed:240,power:2.6,response:25,pool:.65};
+const defaults={size:8,pressure:.45,speed:240,power:2.6,response:25,pool:.65};
 let settings={...defaults},ink='#203656',strokes=[],redoStack=[],active=null,ratio=1,width=0,height=0,raf=0,lastUI=0,historyDirty=true;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 // Pressure sets the base diameter; velocity scales it from 100% down to 30%.
 function radiusAt(v,p,pressure=p.pressure){const base=p.size*.5*clamp(pressure,0,1);const speedScale=.3+.7/(1+Math.pow(Math.max(0,v)/p.speed,p.power));return Math.max(.001,base*speedScale);}
-function eventPressure(e,a){return a.usePressure?clamp(Number(e.pressure)||0,0,1):a.params.pressure;}
+function calibratedPressure(value){return Math.pow(Math.max(.2,clamp(value,0,1)),.55);}
+function eventPressure(e,a){return a.usePressure?calibratedPressure(Number(e.pressure)||0):a.params.pressure;}
 function circle(c,x,y,r){c.beginPath();c.arc(x,y,Math.max(.001,r),0,Math.PI*2);c.fill();}
 // Dense circular footprints form one opaque union; no dark seams at stamp overlaps.
 function segment(c,a,b){const d=Math.hypot(b.x-a.x,b.y-a.y);const step=Math.max(.13,Math.min(a.r,b.r)*.45);const n=Math.max(1,Math.ceil(d/step));for(let i=1;i<=n;i++){const t=i/n;circle(c,a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.r+(b.r-a.r)*t);}}
@@ -22,7 +23,7 @@ function setColor(c){ink=c;$('color').value=c;document.querySelectorAll('.swatch
 document.querySelectorAll('.swatch').forEach(b=>b.addEventListener('click',()=>setColor(b.dataset.color)));$('color').addEventListener('input',e=>setColor(e.target.value));
 function pos(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top,t:e.timeStamp};}
 function cursor(e){if(e.pointerType!=='mouse'){return;}const p=pos(e),r=active?active.radius:radiusAt(0,settings);$('cursor').style.cssText='display:block;left:'+p.x+'px;top:'+p.y+'px;width:'+Math.max(4,r*2)+'px;height:'+Math.max(4,r*2)+'px';}
-canvas.addEventListener('pointerdown',e=>{if(active||e.button!==0)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);const p=pos(e),usePressure=e.pointerType==='pen'&&Number.isFinite(e.pressure),pressure=usePressure?clamp(e.pressure,0,1):settings.pressure,r=radiusAt(0,settings,pressure);active={id:e.pointerId,color:ink,params:{...settings},usePressure,pressure,points:[{...p,r}],radius:r,velocity:0,prev:p,lastMotion:p.t,visualTime:p.t,pool:null};lc.clearRect(0,0,width,height);lc.fillStyle=ink;circle(lc,p.x,p.y,active.radius);updateUI(0,active.radius,true,pressure);render();cursor(e);raf=requestAnimationFrame(tick);});
+canvas.addEventListener('pointerdown',e=>{if(active||e.button!==0)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);const p=pos(e),usePressure=e.pointerType==='pen'&&Number.isFinite(e.pressure),pressure=usePressure?calibratedPressure(e.pressure):settings.pressure,r=radiusAt(0,settings,pressure);active={id:e.pointerId,color:ink,params:{...settings},usePressure,pressure,points:[{...p,r}],radius:r,velocity:0,prev:p,lastMotion:p.t,visualTime:p.t,pool:null};lc.clearRect(0,0,width,height);lc.fillStyle=ink;circle(lc,p.x,p.y,active.radius);updateUI(0,active.radius,true,pressure);render();cursor(e);raf=requestAnimationFrame(tick);});
 function move(e,readPressure=true){if(!active||e.pointerId!==active.id)return;const a=active,p=pos(e),d=Math.hypot(p.x-a.prev.x,p.y-a.prev.y),previousPressure=a.pressure;if(readPressure)a.pressure=eventPressure(e,a);if(d<.025&&a.pressure===previousPressure)return;const dt=clamp(p.t-a.prev.t,.5,250);if(d>=.025){const v=d/dt*1000,sv=1-Math.exp(-dt/14);a.velocity+=(v-a.velocity)*sv;a.lastMotion=p.t;}const target=radiusAt(a.velocity,a.params,a.pressure);a.radius+=(target-a.radius)*(1-Math.exp(-dt/a.params.response));const q={...p,r:a.radius};lc.fillStyle=a.color;segment(lc,a.points[a.points.length-1],q);a.points.push(q);a.prev=p;a.visualTime=p.t;}
 canvas.addEventListener('pointermove',e=>{cursor(e);if(!active||e.pointerId!==active.id)return;e.preventDefault();const events=e.getCoalescedEvents?e.getCoalescedEvents():[];for(const x of events.length?events:[e])move(x);render();updateUI(active.velocity,active.radius,true,active.pressure);});
 // No-event pauses also count as slowing down, so a stationary pen regains its footprint.

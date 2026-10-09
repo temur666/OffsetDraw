@@ -19,15 +19,15 @@
 <details><summary>服务器已生效参数</summary><pre id="appliedSettings">尚未读取</pre></details>
 <p>此状态表示服务已保存，不代表手机已连接；请同时查看手机连接状态。</p></div><h2>笔尖与墨水</h2>
 <div class="colors" aria-label="墨水颜色"><button class="swatch selected" style="--c:#203656" data-color="#203656" aria-label="蓝黑色"></button><button class="swatch" style="--c:#202329" data-color="#202329" aria-label="黑色"></button><button class="swatch" style="--c:#265ec4" data-color="#265ec4" aria-label="蓝色"></button><button class="swatch" style="--c:#a23e4b" data-color="#a23e4b" aria-label="红色"></button><input id="color" type="color" value="#203656" aria-label="自定义墨水颜色"></div>
-<div class="control"><div class="label"><label for="size">默认笔尖直径</label><output id="sizeOut"></output></div><input id="size" type="range" min="1" max="12" step=".1" value="3.8"><p>满压力、静止时的直径。圆形笔尖不旋转。</p></div>
-<div class="control"><div class="label"><label for="pressure">固定压力（鼠标 / 手指）</label><output id="pressureOut"></output></div><input id="pressure" type="range" min=".1" max="1" step=".05" value="1"><p>模拟用力大小；触控笔使用设备提供的压感。</p></div>
+<div class="control"><div class="label"><label for="size">默认笔尖直径</label><output id="sizeOut"></output></div><input id="size" type="range" min="1" max="64" step=".1" value="8"><p>满压力、静止时的直径。圆形笔尖不旋转。</p></div>
+<div class="control"><div class="label"><label for="pressure">固定压力（鼠标 / 手指）</label><output id="pressureOut"></output></div><input id="pressure" type="range" min=".1" max="1" step=".05" value=".45"><p>模拟用力大小；手指使用；触控笔另行校准设备压感。</p></div>
 <div class="control"><div class="label"><label for="speed">变细速度</label><output id="speedOut"></output></div><input id="speed" type="range" min="60" max="1000" step="10" value="240"><p>到达这个速度时，直径为当前压力基础的 65%。</p></div>
 <div class="control"><div class="label"><label for="power">高速变细强度</label><output id="powerOut"></output></div><input id="power" type="range" min="1" max="4" step=".1" value="2.6"><p>越高，高速时越接近下限；最低保留 30% 直径。</p></div>
 <div class="control"><div class="label"><label for="response">粗细响应</label><output id="responseOut"></output></div><input id="response" type="range" min="5" max="100" step="5" value="25"><p>越小变化越快；越大过渡越柔和。</p></div>
 <div class="control"><div class="label"><label for="pool">离笔积墨</label><output id="poolOut"></output></div><input id="pool" type="range" min="0" max="1.5" step=".05" value=".65"><p>设为 0 关闭。收笔越慢、停留越久，墨点越明显。</p></div>
 <div class="readout"><div class="readout-top"><span id="state">抬笔 · 默认笔尖</span><div class="nib-stage"><div class="nib" id="nib"></div></div></div><div class="meter"><div id="areaBar"></div></div><div class="numbers"><div><b id="pressureValue">100%</b><span>当前压力</span></div><div><b id="velocity">0</b><span>速度 px/s</span></div><div><b id="diameter">3.80</b><span>实际直径 px</span></div></div></div>
 <p id="rangeHint" style="font-size:12px;color:#285beb;margin:0 0 16px;grid-column:1/-1"></p>
-<button class="reset" id="reset">恢复默认参数</button><p class="formula">压力决定基础粗细，速度在此基础上收细，最快保留 30% 的直径。墨色与不透明度固定。鼠标固定压力下不会自动收尖，离笔积墨仍可调节。</p>
+<button class="reset" id="reset">恢复默认参数</button><p class="formula">压力决定基础粗细，速度在此基础上收细，最快保留 30% 的直径。墨色与不透明度固定。鼠标和手指使用固定压力；Apple Pencil 会校准轻压，让起笔不显得过细。</p>
 </aside></main><div class="toast" id="toast" role="status"></div>
 <script src="/brush.js"></script>
 <script src="/remote.js"></script>

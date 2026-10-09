@@ -13,10 +13,10 @@ struct RollerballEngineTests {
         }
         let settings = RollerballSettings()
         precondition(settings.isValid)
-        close(settings.radius(velocity: 0, pressure: 1), 1.9, "stationary")
-        close(settings.radius(velocity: 240, pressure: 1), 1.9 * 0.65, "threshold 65%")
-        close(settings.radius(velocity: 240, pressure: 0.5), 1.9 * 0.65 * 0.5, "pressure linear")
-        close(settings.radius(velocity: 1e12, pressure: 1), 1.9 * 0.3, "30% floor")
+        close(settings.radius(velocity: 0, pressure: 1), 4.0, "stationary")
+        close(settings.radius(velocity: 240, pressure: 1), 4.0 * 0.65, "threshold 65%")
+        close(settings.radius(velocity: 240, pressure: 0.5), 4.0 * 0.65 * 0.5, "pressure linear")
+        close(settings.radius(velocity: 1e12, pressure: 1), 4.0 * 0.3, "30% floor")
         var invalid = settings
         invalid.size = .nan
         precondition(!invalid.isValid)
@@ -25,11 +25,11 @@ struct RollerballEngineTests {
         let engine = RollerballEngine()
         engine.begin(x: 0, y: 0, time: 1, pressure: nil, settings: settings)
         engine.move(x: 50, y: 0, time: 1.02, pressure: nil)
-        precondition(engine.radius < 1.9)
+        precondition(engine.radius < 4.0)
         let fastRadius = engine.radius
         for i in 1...60 { engine.tick(time: 1.02 + Double(i) / 60) }
         precondition(engine.radius > fastRadius)
-        close(engine.radius, 1.9, "stationary recovery")
+        close(engine.radius, 4.0, "stationary recovery")
         let stroke = engine.finish(time: 2.02)!
         precondition(stroke.pool!.radius > stroke.points.last!.radius)
         precondition(engine.stroke == nil)
@@ -47,12 +47,12 @@ struct RollerballEngineTests {
             let events = trace["events"] as! [[String: Any]]
             let first = events[0]
             engine.begin(x: first["x"] as! Double, y: first["y"] as! Double,
-                         time: (first["t"] as! Double) / 1000, pressure: first["pressure"] as? Double, settings: settings)
+                         time: (first["t"] as! Double) / 1000, pressure: (first["pressure"] as? Double).map { pow(max(0.2, $0), 0.55) }, settings: settings)
             for event in events.dropFirst() {
                 let time = (event["t"] as! Double) / 1000
                 if event["kind"] as? String == "tick" { engine.tick(time: time) }
                 else { engine.move(x: event["x"] as! Double, y: event["y"] as! Double,
-                                   time: time, pressure: event["pressure"] as? Double) }
+                                   time: time, pressure: (event["pressure"] as? Double).map { pow(max(0.2, $0), 0.55) }) }
             }
             let result = engine.finish(time: (trace["endTime"] as! Double) / 1000)!
             let expected = trace["points"] as! [[String: Double]]
