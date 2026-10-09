@@ -13,6 +13,7 @@ final class RollerballCanvasView: UIView {
     private var bitmap: CGContext?
     private var bitmapSize: CGSize = .zero
     private var paintedPoints = 0
+    private var predictedPoints: [RollerballPoint] = []
     private var displayLink: CADisplayLink?
     private let clockTarget = RollerballClockTarget()
     var isDrawing: Bool { engine.stroke != nil }
@@ -83,6 +84,7 @@ final class RollerballCanvasView: UIView {
             context.draw(image, in: bounds)
             context.restoreGState()
         }
+        drawPrediction(in: context)
     }
 
     private func circle(_ p: RollerballPoint) {
@@ -98,6 +100,23 @@ final class RollerballCanvasView: UIView {
             let t = Double(i) / Double(count)
             circle(RollerballPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
                                    time: b.time, radius: a.radius + (b.radius - a.radius) * t))
+        }
+    }
+
+    private func circle(_ p: RollerballPoint, in context: CGContext) {
+        let r = max(0.001, p.radius)
+        context.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
+    }
+
+    private func segment(_ a: RollerballPoint, _ b: RollerballPoint, in context: CGContext) {
+        let distance = hypot(b.x - a.x, b.y - a.y)
+        let step = max(0.13, min(a.radius, b.radius) * 0.45)
+        let count = max(1, Int(ceil(distance / step)))
+        for i in 1...count {
+            let t = Double(i) / Double(count)
+            circle(RollerballPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+                                   time: b.time, radius: a.radius + (b.radius - a.radius) * t),
+                   in: context)
         }
     }
 
@@ -121,6 +140,33 @@ final class RollerballCanvasView: UIView {
         onChange?()
     }
 
+    /// Predicted touches are a disposable visual extension only. They are never burned into bitmap
+    /// and are replaced as soon as the next batch of real coalesced samples arrives.
+    private func drawPrediction(in context: CGContext) {
+        guard !predictedPoints.isEmpty, let stroke = engine.stroke,
+              var previous = stroke.points.last else { return }
+        context.setFillColor(UIColor(rollerballHex: stroke.settings.color).nightCanvasInk.cgColor)
+        for point in predictedPoints {
+            segment(previous, point, in: context)
+            previous = point
+        }
+    }
+
+    private func updatePrediction(for touch: UITouch, event: UIEvent?) {
+        guard let event else {
+            predictedPoints.removeAll(keepingCapacity: true)
+            setNeedsDisplay()
+            return
+        }
+        let samples = event.predictedTouches(for: touch).map { sample -> RollerballInputSample in
+            let point = sample.location(in: self)
+            return RollerballInputSample(x: point.x, y: point.y, time: sample.timestamp,
+                                         pressure: pressure(sample))
+        }
+        predictedPoints = engine.predictedPoints(for: samples)
+        setNeedsDisplay()
+    }
+
     private func pressure(_ touch: UITouch) -> Double? {
         guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return nil }
         let rawPressure = min(1, max(0, Double(touch.force / touch.maximumPossibleForce)))
@@ -132,6 +178,7 @@ final class RollerballCanvasView: UIView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard activeTouch == nil, let touch = touches.first else { return }
         activeTouch = touch
+        predictedPoints.removeAll(keepingCapacity: true)
         let point = touch.location(in: self)
         engine.begin(x: point.x, y: point.y, time: touch.timestamp, pressure: pressure(touch),
                      settings: settings, brushStyle: brushStyle)
@@ -144,15 +191,22 @@ final class RollerballCanvasView: UIView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = activeTouch, touches.contains(touch) else { return }
+
+        // Real samples invalidate the old prediction immediately.
+        predictedPoints.removeAll(keepingCapacity: true)
         for sample in event?.coalescedTouches(for: touch) ?? [touch] {
             let point = sample.location(in: self)
             engine.move(x: point.x, y: point.y, time: sample.timestamp, pressure: pressure(sample))
         }
         paintActive()
+
+        // Then extend only the visible tip with Apple's short-horizon prediction.
+        updatePrediction(for: touch, event: event)
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = activeTouch, touches.contains(touch) else { return }
+        predictedPoints.removeAll(keepingCapacity: true)
         let point = touch.location(in: self)
         // Release reports zero force; preserve the last contact pressure just like the HTML.
         engine.move(x: point.x, y: point.y, time: touch.timestamp, pressure: nil)
@@ -162,7 +216,10 @@ final class RollerballCanvasView: UIView {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { interrupted() }
 
-    @objc private func interrupted() { finish(time: CACurrentMediaTime(), withPool: false) }
+    @objc private func interrupted() {
+        predictedPoints.removeAll(keepingCapacity: true)
+        finish(time: CACurrentMediaTime(), withPool: false)
+    }
 
     fileprivate func tick(_ link: CADisplayLink) {
         engine.tick(time: link.timestamp)
@@ -173,7 +230,11 @@ final class RollerballCanvasView: UIView {
         displayLink?.invalidate()
         displayLink = nil
         activeTouch = nil
-        guard let stroke = engine.finish(time: time, withPool: withPool) else { return }
+        predictedPoints.removeAll(keepingCapacity: true)
+        guard let stroke = engine.finish(time: time, withPool: withPool) else {
+            setNeedsDisplay()
+            return
+        }
         strokes.append(stroke)
         redoStack.removeAll()
         // Finalize the thick end cap and its taper before the stroke is committed.
@@ -199,6 +260,7 @@ final class RollerballCanvasView: UIView {
         guard !isDrawing else { return }
         strokes.removeAll()
         redoStack.removeAll()
+        predictedPoints.removeAll(keepingCapacity: true)
         rebuild()
         onChange?()
     }
