@@ -58,7 +58,6 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
         hint.text = "在这里试着写、画\n慢一点，再快一点，最后停笔。"
         hint.textColor = UIColor.white.withAlphaComponent(0.48)
         hint.font = .systemFont(ofSize: 17, weight: .regular)
-        hint.textColor = .tertiaryLabel
         hint.textAlignment = .center
         hint.numberOfLines = 0
         hint.isUserInteractionEnabled = false
@@ -162,7 +161,7 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
         let pressure = canvas.isDrawing ? canvas.engine.pressure : settings.pressure
         let diameter = canvas.isDrawing ? canvas.engine.radius * 2 : settings.size * settings.pressure
         let speed = canvas.isDrawing ? canvas.engine.velocity : 0
-        readout.text = String(format: "%d 笔 · 压力 %.0f%% · %.0f pt/s · 直径 %.2f pt", canvas.strokes.count, pressure * 100, speed, diameter)
+        readout.text = String(format: "%d 笔 · 压力 %.0f%% · %.0f pt/s · 直径 %.2f pt\n双指拖动 · 捏合缩放", canvas.strokes.count, pressure * 100, speed, diameter)
         parameters.text = String(format: "笔尖 %.1f · 压力 %.0f%% · 变细速度 %.0f\n强度 %.1f · 响应 %.0f ms · 积墨 %.2f · %@", lastSettings.size, lastSettings.pressure * 100, lastSettings.speed, lastSettings.power, lastSettings.response, lastSettings.pool, lastSettings.color)
     }
 }
