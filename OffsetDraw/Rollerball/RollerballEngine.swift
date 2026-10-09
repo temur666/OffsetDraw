@@ -44,6 +44,8 @@ final class RollerballEngine {
     private(set) var pressure: Double = 0.45
     private(set) var radius: Double = 1.9
     private var previous: RollerballPoint?
+    private var inputX: Double = 0
+    private var inputY: Double = 0
     private var lastMotion: Double = 0
     private var visualTime: Double = 0
     private var usesPressure = false
@@ -56,25 +58,35 @@ final class RollerballEngine {
         let point = RollerballPoint(x: x, y: y, time: time, radius: radius)
         stroke = RollerballStroke(settings: settings, points: [point])
         previous = point
+        inputX = x
+        inputY = y
         lastMotion = time
         visualTime = time
     }
 
     func move(x: Double, y: Double, time: Double, pressure: Double?) {
         guard let previous, let settings = stroke?.settings, time >= previous.time else { return }
-        let distance = hypot(x - previous.x, y - previous.y)
+        let inputDistance = hypot(x - inputX, y - inputY)
         let oldPressure = self.pressure
         if usesPressure, let pressure { self.pressure = min(1, max(0, pressure)) }
-        guard distance >= 0.025 || self.pressure != oldPressure else { return }
+        guard inputDistance >= 0.025 || self.pressure != oldPressure else { return }
         let dt = min(250, max(0.5, (time - previous.time) * 1000))
-        if distance >= 0.025 {
-            let speed = distance / dt * 1000
+        if inputDistance >= 0.025 {
+            let speed = inputDistance / dt * 1000
             velocity += (speed - velocity) * (1 - exp(-dt / 14))
             lastMotion = time
         }
+        // Smooth only the rendered centerline. Faster strokes use a shorter filter
+        // so the nib remains close to the Pencil while slow strokes lose hand jitter.
+        let positionResponse = 5 + 9 / (1 + velocity / 600)
+        let positionMix = 1 - exp(-dt / positionResponse)
+        let smoothX = previous.x + (x - previous.x) * positionMix
+        let smoothY = previous.y + (y - previous.y) * positionMix
+        inputX = x
+        inputY = y
         let target = settings.radius(velocity: velocity, pressure: self.pressure)
         radius += (target - radius) * (1 - exp(-dt / settings.response))
-        let point = RollerballPoint(x: x, y: y, time: time, radius: radius)
+        let point = RollerballPoint(x: smoothX, y: smoothY, time: time, radius: radius)
         stroke?.points.append(point)
         self.previous = point
         visualTime = time
