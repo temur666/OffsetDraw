@@ -11,14 +11,18 @@ final class DrawingDocumentStore {
     private let documentsDirectory: URL
     private let thumbnailsDirectory: URL
 
-    init(fileManager: FileManager = .default) throws {
+    init(
+        fileManager: FileManager = .default,
+        documentsDirectoryName: String = "Drawings",
+        thumbnailsDirectoryName: String = "DrawingThumbnails"
+    ) throws {
         self.fileManager = fileManager
         guard let directory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
             throw DrawingDocumentStoreError.documentsDirectoryUnavailable
         }
 
-        documentsDirectory = directory.appendingPathComponent("Drawings", isDirectory: true)
-        thumbnailsDirectory = directory.appendingPathComponent("DrawingThumbnails", isDirectory: true)
+        documentsDirectory = directory.appendingPathComponent(documentsDirectoryName, isDirectory: true)
+        thumbnailsDirectory = directory.appendingPathComponent(thumbnailsDirectoryName, isDirectory: true)
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
