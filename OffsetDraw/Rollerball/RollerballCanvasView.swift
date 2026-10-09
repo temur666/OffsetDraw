@@ -2,6 +2,9 @@ import UIKit
 
 final class RollerballCanvasView: UIView {
     var settings = RollerballSettings()
+    var brushStyle: RollerballBrushStyle = .rollerball {
+        didSet { UserDefaults.standard.set(brushStyle.rawValue, forKey: "rollerball.brushStyle") }
+    }
     var onChange: (() -> Void)?
     private(set) var strokes: [RollerballStroke] = []
     private var redoStack: [RollerballStroke] = []
@@ -24,6 +27,10 @@ final class RollerballCanvasView: UIView {
         layer.cornerRadius = 16
         clipsToBounds = true
         accessibilityLabel = "走珠笔独立画布"
+        if let rawValue = UserDefaults.standard.object(forKey: "rollerball.brushStyle") as? Int,
+           let savedStyle = RollerballBrushStyle(rawValue: rawValue) {
+            brushStyle = savedStyle
+        }
         clockTarget.canvas = self
         NotificationCenter.default.addObserver(self, selector: #selector(interrupted),
                                                name: UIApplication.willResignActiveNotification, object: nil)
@@ -126,7 +133,8 @@ final class RollerballCanvasView: UIView {
         guard activeTouch == nil, let touch = touches.first else { return }
         activeTouch = touch
         let point = touch.location(in: self)
-        engine.begin(x: point.x, y: point.y, time: touch.timestamp, pressure: pressure(touch), settings: settings)
+        engine.begin(x: point.x, y: point.y, time: touch.timestamp, pressure: pressure(touch),
+                     settings: settings, brushStyle: brushStyle)
         paintedPoints = 0
         paintActive()
         let link = CADisplayLink(target: clockTarget, selector: #selector(RollerballClockTarget.tick(_:)))
@@ -166,14 +174,11 @@ final class RollerballCanvasView: UIView {
         displayLink = nil
         activeTouch = nil
         guard let stroke = engine.finish(time: time, withPool: withPool) else { return }
-        if let pool = stroke.pool {
-            bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).nightCanvasInk.cgColor)
-            circle(pool)
-        }
         strokes.append(stroke)
         redoStack.removeAll()
+        // Finalize the thick end cap and its taper before the stroke is committed.
+        rebuild()
         onChange?()
-        setNeedsDisplay()
     }
 
     func undo() {

@@ -24,6 +24,18 @@ struct RollerballSettings: Codable, Equatable {
     }
 }
 
+enum RollerballBrushStyle: Int {
+    case rollerball = 0
+    case thickEnds
+
+    var title: String {
+        switch self {
+        case .rollerball: "走珠笔"
+        case .thickEnds: "两头粗"
+        }
+    }
+}
+
 struct RollerballPoint {
     var x: Double
     var y: Double
@@ -49,9 +61,14 @@ final class RollerballEngine {
     private var lastMotion: Double = 0
     private var visualTime: Double = 0
     private var usesPressure = false
+    private var brushStyle: RollerballBrushStyle = .rollerball
+    private var strokeDistance: Double = 0
 
-    func begin(x: Double, y: Double, time: Double, pressure: Double?, settings: RollerballSettings) {
+    func begin(x: Double, y: Double, time: Double, pressure: Double?, settings: RollerballSettings,
+               brushStyle: RollerballBrushStyle = .rollerball) {
         usesPressure = pressure != nil
+        self.brushStyle = brushStyle
+        strokeDistance = 0
         self.pressure = min(1, max(0, pressure ?? settings.pressure))
         radius = settings.radius(velocity: 0, pressure: self.pressure)
         velocity = 0
@@ -86,7 +103,9 @@ final class RollerballEngine {
         inputY = y
         let target = settings.radius(velocity: velocity, pressure: self.pressure)
         radius += (target - radius) * (1 - exp(-dt / settings.response))
-        let point = RollerballPoint(x: smoothX, y: smoothY, time: time, radius: radius)
+        strokeDistance += hypot(smoothX - previous.x, smoothY - previous.y)
+        let shapedRadius = radius * startEnvelope(at: strokeDistance)
+        let point = RollerballPoint(x: smoothX, y: smoothY, time: time, radius: shapedRadius)
         stroke?.points.append(point)
         self.previous = point
         visualTime = time
@@ -101,13 +120,30 @@ final class RollerballEngine {
             * (1 - exp(-dt / settings.response))
         visualTime = time
         if abs(last.radius - radius) > 0.003 {
-            stroke?.points.append(RollerballPoint(x: last.x, y: last.y, time: time, radius: radius))
+            stroke?.points.append(RollerballPoint(x: last.x, y: last.y, time: time,
+                                                  radius: radius * startEnvelope(at: strokeDistance)))
         }
     }
 
     func finish(time: Double, withPool: Bool = true) -> RollerballStroke? {
         guard var result = stroke, let end = result.points.last else { return nil }
         let settings = result.settings
+        if brushStyle == .thickEnds, result.points.count > 1 {
+            var distances = [Double](repeating: 0, count: result.points.count)
+            for index in 1..<result.points.count {
+                let previous = result.points[index - 1]
+                let point = result.points[index]
+                distances[index] = distances[index - 1] + hypot(point.x - previous.x, point.y - previous.y)
+            }
+            let total = distances.last ?? 0
+            for index in result.points.indices {
+                let start = distances[index]
+                let end = max(0, total - start)
+                let originalEnvelope = startEnvelope(at: start)
+                let endEnvelope = waistDepth + (1 - waistDepth) * max(exp(-start / capLength), exp(-end / capLength))
+                result.points[index].radius = result.points[index].radius / originalEnvelope * endEnvelope
+            }
+        }
         if withPool && settings.pool > 0 {
             let idle = min(1, max(0, (time - lastMotion) / 0.6))
             let slow = 1 / (1 + velocity / settings.speed)
@@ -117,6 +153,15 @@ final class RollerballEngine {
         }
         stroke = nil
         previous = nil
+        strokeDistance = 0
         return result
+    }
+
+    private let waistDepth = 0.78
+    private let capLength = 14.0
+
+    private func startEnvelope(at distance: Double) -> Double {
+        guard brushStyle == .thickEnds else { return 1 }
+        return waistDepth + (1 - waistDepth) * exp(-distance / capLength)
     }
 }

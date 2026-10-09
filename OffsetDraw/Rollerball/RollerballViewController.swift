@@ -2,6 +2,7 @@ import UIKit
 
 final class RollerballViewController: UIViewController, UITextFieldDelegate, UIScrollViewDelegate {
     private let canvas = RollerballCanvasView()
+    private let brushPicker = UISegmentedControl(items: [RollerballBrushStyle.rollerball.title, "两头粗 · 中间细"])
     private let remote = RollerballRemoteClient()
     private let address = UITextField()
     private let status = UILabel()
@@ -68,6 +69,9 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
             hint.centerYAnchor.constraint(equalTo: canvas.centerYAnchor),
             hint.widthAnchor.constraint(lessThanOrEqualTo: canvas.widthAnchor, constant: -24)
         ])
+        brushPicker.selectedSegmentIndex = canvas.brushStyle.rawValue
+        brushPicker.addTarget(self, action: #selector(brushStyleChanged), for: .valueChanged)
+
         let viewport = UIScrollView()
         viewport.delegate = self
         viewport.backgroundColor = canvas.backgroundColor
@@ -89,7 +93,7 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
             canvas.widthAnchor.constraint(equalTo: viewport.frameLayoutGuide.widthAnchor),
             canvas.heightAnchor.constraint(equalTo: viewport.frameLayoutGuide.heightAnchor)
         ])
-        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, viewport, readout])
+        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, brushPicker, viewport, readout])
         stack.axis = .vertical
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -149,6 +153,10 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
     @objc private func undo() { canvas.undo() }
     @objc private func redo() { canvas.redo() }
     @objc private func clear() { canvas.clear() }
+
+    @objc private func brushStyleChanged() {
+        canvas.brushStyle = RollerballBrushStyle(rawValue: brushPicker.selectedSegmentIndex) ?? .rollerball
+    }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { canvas }
 
