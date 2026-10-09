@@ -2,6 +2,7 @@ import UIKit
 
 final class RollerballViewController: UIViewController, UITextFieldDelegate, UIScrollViewDelegate {
     private let canvas = RollerballCanvasView()
+    private let modePicker = UISegmentedControl(items: [RollerballCorrectionMode.raw.title, RollerballCorrectionMode.write.title])
     private let brushPicker = UISegmentedControl(items: [RollerballBrushStyle.rollerball.title, "两头粗 · 中间细"])
     private let remote = RollerballRemoteClient()
     private let address = UITextField()
@@ -69,6 +70,10 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
             hint.centerYAnchor.constraint(equalTo: canvas.centerYAnchor),
             hint.widthAnchor.constraint(lessThanOrEqualTo: canvas.widthAnchor, constant: -24)
         ])
+
+        modePicker.selectedSegmentIndex = canvas.correctionMode.rawValue
+        modePicker.addTarget(self, action: #selector(correctionModeChanged), for: .valueChanged)
+        modePicker.accessibilityLabel = "书写修正模式"
         brushPicker.selectedSegmentIndex = canvas.brushStyle.rawValue
         brushPicker.addTarget(self, action: #selector(brushStyleChanged), for: .valueChanged)
 
@@ -93,7 +98,7 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
             canvas.widthAnchor.constraint(equalTo: viewport.frameLayoutGuide.widthAnchor),
             canvas.heightAnchor.constraint(equalTo: viewport.frameLayoutGuide.heightAnchor)
         ])
-        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, brushPicker, viewport, readout])
+        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, modePicker, brushPicker, viewport, readout])
         stack.axis = .vertical
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -154,6 +159,11 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
     @objc private func redo() { canvas.redo() }
     @objc private func clear() { canvas.clear() }
 
+    @objc private func correctionModeChanged() {
+        canvas.correctionMode = RollerballCorrectionMode(rawValue: modePicker.selectedSegmentIndex) ?? .write
+        updateReadout()
+    }
+
     @objc private func brushStyleChanged() {
         canvas.brushStyle = RollerballBrushStyle(rawValue: brushPicker.selectedSegmentIndex) ?? .rollerball
     }
@@ -169,7 +179,7 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate, UIS
         let pressure = canvas.isDrawing ? canvas.engine.pressure : settings.pressure
         let diameter = canvas.isDrawing ? canvas.engine.radius * 2 : settings.size * settings.pressure
         let speed = canvas.isDrawing ? canvas.engine.velocity : 0
-        readout.text = String(format: "%d 笔 · 压力 %.0f%% · %.0f pt/s · 直径 %.2f pt\n双指拖动 · 捏合缩放", canvas.strokes.count, pressure * 100, speed, diameter)
+        readout.text = String(format: "%@ · %d 笔 · 压力 %.0f%% · %.0f pt/s · 直径 %.2f pt\n双指拖动 · 捏合缩放", canvas.correctionMode.title, canvas.strokes.count, pressure * 100, speed, diameter)
         parameters.text = String(format: "笔尖 %.1f · 压力 %.0f%% · 变细速度 %.0f\n强度 %.1f · 响应 %.0f ms · 积墨 %.2f · %@", lastSettings.size, lastSettings.pressure * 100, lastSettings.speed, lastSettings.power, lastSettings.response, lastSettings.pool, lastSettings.color)
     }
 }
