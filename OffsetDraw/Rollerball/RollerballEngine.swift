@@ -43,13 +43,20 @@ struct RollerballPoint {
     var radius: Double
 }
 
+struct RollerballInputSample {
+    var x: Double
+    var y: Double
+    var time: Double
+    var pressure: Double?
+}
+
 struct RollerballStroke {
     let settings: RollerballSettings
     var points: [RollerballPoint]
     var pool: RollerballPoint?
 }
 
-/// Faithful port of radiusAt / move / tick / finish from rollerball-brush.html.
+/// Low-latency write engine: real Pencil samples are committed directly. Prediction is preview-only.
 final class RollerballEngine {
     private(set) var stroke: RollerballStroke?
     private(set) var velocity: Double = 0
@@ -58,6 +65,7 @@ final class RollerballEngine {
     private var previous: RollerballPoint?
     private var inputX: Double = 0
     private var inputY: Double = 0
+    private var inputTime: Double = 0
     private var lastMotion: Double = 0
     private var visualTime: Double = 0
     private var usesPressure = false
@@ -77,38 +85,78 @@ final class RollerballEngine {
         previous = point
         inputX = x
         inputY = y
+        inputTime = time
         lastMotion = time
         visualTime = time
     }
 
     func move(x: Double, y: Double, time: Double, pressure: Double?) {
-        guard let previous, let settings = stroke?.settings, time >= previous.time else { return }
+        guard previous != nil, let settings = stroke?.settings, time >= inputTime else { return }
         let inputDistance = hypot(x - inputX, y - inputY)
         let oldPressure = self.pressure
         if usesPressure, let pressure { self.pressure = min(1, max(0, pressure)) }
         guard inputDistance >= 0.025 || self.pressure != oldPressure else { return }
-        let dt = min(250, max(0.5, (time - previous.time) * 1000))
+        let dt = min(250, max(0.5, (time - inputTime) * 1000))
         if inputDistance >= 0.025 {
             let speed = inputDistance / dt * 1000
             velocity += (speed - velocity) * (1 - exp(-dt / 14))
             lastMotion = time
         }
-        // Smooth only the rendered centerline. Faster strokes use a shorter filter
-        // so the nib remains close to the Pencil while slow strokes lose hand jitter.
-        let positionResponse = 5 + 9 / (1 + velocity / 600)
-        let positionMix = 1 - exp(-dt / positionResponse)
-        let smoothX = previous.x + (x - previous.x) * positionMix
-        let smoothY = previous.y + (y - previous.y) * positionMix
-        inputX = x
-        inputY = y
+
+        // Position stays on the real Pencil sample. Only brush physics (velocity/pressure/radius)
+        // is smoothed, so the stroke no longer trails behind the nib.
         let target = settings.radius(velocity: velocity, pressure: self.pressure)
         radius += (target - radius) * (1 - exp(-dt / settings.response))
-        strokeDistance += hypot(smoothX - previous.x, smoothY - previous.y)
-        let shapedRadius = radius * startEnvelope(at: strokeDistance)
-        let point = RollerballPoint(x: smoothX, y: smoothY, time: time, radius: shapedRadius)
+        strokeDistance += inputDistance
+        let point = RollerballPoint(x: x, y: y, time: time,
+                                    radius: radius * startEnvelope(at: strokeDistance))
         stroke?.points.append(point)
-        self.previous = point
+        previous = point
+        inputX = x
+        inputY = y
+        inputTime = time
         visualTime = time
+    }
+
+    /// Produces a temporary continuation using the same pressure × speed brush physics without
+    /// mutating the committed stroke. Callers must discard these points when real samples arrive.
+    func predictedPoints(for samples: [RollerballInputSample]) -> [RollerballPoint] {
+        guard let settings = stroke?.settings, !samples.isEmpty else { return [] }
+
+        var previewX = inputX
+        var previewY = inputY
+        var previewTime = inputTime
+        var previewVelocity = velocity
+        var previewPressure = pressure
+        var previewRadius = radius
+        var previewDistance = strokeDistance
+        var result: [RollerballPoint] = []
+        result.reserveCapacity(samples.count)
+
+        for sample in samples {
+            guard sample.time >= previewTime else { continue }
+            let distance = hypot(sample.x - previewX, sample.y - previewY)
+            let oldPressure = previewPressure
+            if usesPressure, let pressure = sample.pressure {
+                previewPressure = min(1, max(0, pressure))
+            }
+            guard distance >= 0.025 || previewPressure != oldPressure else { continue }
+
+            let dt = min(250, max(0.5, (sample.time - previewTime) * 1000))
+            if distance >= 0.025 {
+                let speed = distance / dt * 1000
+                previewVelocity += (speed - previewVelocity) * (1 - exp(-dt / 14))
+            }
+            let target = settings.radius(velocity: previewVelocity, pressure: previewPressure)
+            previewRadius += (target - previewRadius) * (1 - exp(-dt / settings.response))
+            previewDistance += distance
+            result.append(RollerballPoint(x: sample.x, y: sample.y, time: sample.time,
+                                          radius: previewRadius * startEnvelope(at: previewDistance)))
+            previewX = sample.x
+            previewY = sample.y
+            previewTime = sample.time
+        }
+        return result
     }
 
     func tick(time: Double) {
@@ -129,9 +177,8 @@ final class RollerballEngine {
         guard var result = stroke, let last = result.points.last else { return nil }
         let settings = result.settings
 
-        // The rendered centerline intentionally trails the raw Pencil samples while drawing.
-        // On lift, flush that small remainder to the last real input coordinate so short
-        // strokes, hooks and flicks are not visually cut off.
+        // Normally direct-position rendering already reaches the final Pencil sample. Keep this
+        // as a safety flush for a final touch location that was not present in the coalesced batch.
         let endpointDistance = hypot(inputX - last.x, inputY - last.y)
         if endpointDistance > 0.001 {
             let finalDistance = strokeDistance + endpointDistance
