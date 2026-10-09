@@ -18,7 +18,7 @@ final class RollerballCanvasView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .white
+        backgroundColor = UIColor(red: 0.055, green: 0.063, blue: 0.078, alpha: 1)
         isOpaque = true
         isMultipleTouchEnabled = false
         layer.cornerRadius = 16
@@ -60,9 +60,9 @@ final class RollerballCanvasView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        UIColor.white.setFill()
+        context.setFillColor(backgroundColor?.cgColor ?? UIColor.black.cgColor)
         context.fill(bounds)
-        context.setFillColor(UIColor(red: 0.80, green: 0.83, blue: 0.87, alpha: 0.36).cgColor)
+        context.setFillColor(UIColor(red: 0.25, green: 0.28, blue: 0.33, alpha: 0.68).cgColor)
         for x in stride(from: 12.0, to: bounds.width, by: 24) {
             for y in stride(from: 12.0, to: bounds.height, by: 24) {
                 context.fillEllipse(in: CGRect(x: x - 0.65, y: y - 0.65, width: 1.3, height: 1.3))
@@ -95,7 +95,7 @@ final class RollerballCanvasView: UIView {
     }
 
     private func paint(_ stroke: RollerballStroke) {
-        bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).cgColor)
+        bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).nightCanvasInk.cgColor)
         guard let first = stroke.points.first else { return }
         circle(first)
         for index in 1..<stroke.points.count { segment(stroke.points[index - 1], stroke.points[index]) }
@@ -104,7 +104,7 @@ final class RollerballCanvasView: UIView {
 
     private func paintActive() {
         guard let stroke = engine.stroke else { return }
-        bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).cgColor)
+        bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).nightCanvasInk.cgColor)
         for index in paintedPoints..<stroke.points.count {
             if index == 0 { circle(stroke.points[index]) }
             else { segment(stroke.points[index - 1], stroke.points[index]) }
@@ -167,7 +167,7 @@ final class RollerballCanvasView: UIView {
         activeTouch = nil
         guard let stroke = engine.finish(time: time, withPool: withPool) else { return }
         if let pool = stroke.pool {
-            bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).cgColor)
+            bitmap?.setFillColor(UIColor(rollerballHex: stroke.settings.color).nightCanvasInk.cgColor)
             circle(pool)
         }
         strokes.append(stroke)
@@ -209,5 +209,16 @@ extension UIColor {
         let value = UInt32(rollerballHex.dropFirst(), radix: 16) ?? 0x203656
         self.init(red: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
                   blue: CGFloat(value & 255) / 255, alpha: 1)
+    }
+}
+
+private extension UIColor {
+    /// Preserve the selected hue while lifting dark inks to readable colors on the night canvas.
+    var nightCanvasInk: UIColor {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return .white }
+        let lift: CGFloat = 0.68
+        return UIColor(red: red + (1 - red) * lift, green: green + (1 - green) * lift,
+                       blue: blue + (1 - blue) * lift, alpha: alpha)
     }
 }

@@ -1,6 +1,6 @@
 import UIKit
 
-final class RollerballViewController: UIViewController, UITextFieldDelegate {
+final class RollerballViewController: UIViewController, UITextFieldDelegate, UIScrollViewDelegate {
     private let canvas = RollerballCanvasView()
     private let remote = RollerballRemoteClient()
     private let address = UITextField()
@@ -56,6 +56,7 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate {
         readout.textColor = .secondaryLabel
         readout.numberOfLines = 0
         hint.text = "在这里试着写、画\n慢一点，再快一点，最后停笔。"
+        hint.textColor = UIColor.white.withAlphaComponent(0.48)
         hint.font = .systemFont(ofSize: 17, weight: .regular)
         hint.textColor = .tertiaryLabel
         hint.textAlignment = .center
@@ -68,7 +69,28 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate {
             hint.centerYAnchor.constraint(equalTo: canvas.centerYAnchor),
             hint.widthAnchor.constraint(lessThanOrEqualTo: canvas.widthAnchor, constant: -24)
         ])
-        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, canvas, readout])
+        let viewport = UIScrollView()
+        viewport.delegate = self
+        viewport.backgroundColor = canvas.backgroundColor
+        viewport.layer.cornerRadius = 16
+        viewport.clipsToBounds = true
+        viewport.showsHorizontalScrollIndicator = false
+        viewport.showsVerticalScrollIndicator = false
+        viewport.minimumZoomScale = 0.5
+        viewport.maximumZoomScale = 4
+        viewport.panGestureRecognizer.minimumNumberOfTouches = 2
+        viewport.panGestureRecognizer.maximumNumberOfTouches = 2
+        viewport.addSubview(canvas)
+        canvas.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            canvas.leadingAnchor.constraint(equalTo: viewport.contentLayoutGuide.leadingAnchor),
+            canvas.trailingAnchor.constraint(equalTo: viewport.contentLayoutGuide.trailingAnchor),
+            canvas.topAnchor.constraint(equalTo: viewport.contentLayoutGuide.topAnchor),
+            canvas.bottomAnchor.constraint(equalTo: viewport.contentLayoutGuide.bottomAnchor),
+            canvas.widthAnchor.constraint(equalTo: viewport.frameLayoutGuide.widthAnchor),
+            canvas.heightAnchor.constraint(equalTo: viewport.frameLayoutGuide.heightAnchor)
+        ])
+        let stack = UIStackView(arrangedSubviews: [connection, status, parameters, viewport, readout])
         stack.axis = .vertical
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -128,6 +150,8 @@ final class RollerballViewController: UIViewController, UITextFieldDelegate {
     @objc private func undo() { canvas.undo() }
     @objc private func redo() { canvas.redo() }
     @objc private func clear() { canvas.clear() }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { canvas }
 
     private func updateReadout() {
         undoButton.isEnabled = canvas.canUndo
