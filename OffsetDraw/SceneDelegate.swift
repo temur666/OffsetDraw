@@ -157,6 +157,7 @@ final class GeometryLabViewController: UIViewController {
     private let summary = UILabel()
     private let toleranceLabel = UILabel()
     private let toleranceSlider = UISlider()
+    private let lookAheadControl = UISegmentedControl(items: ["0", "1", "2"])
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -173,12 +174,12 @@ final class GeometryLabViewController: UIViewController {
         explanation.font = .systemFont(ofSize: 13)
         explanation.textColor = .secondaryLabel
         explanation.numberOfLines = 0
-        explanation.text = "第一格是真实采样；第二格是当前 5 点平滑；第三格把平滑轨迹压缩成少量锚点，再用 cubic Bézier 重建。拖动容差，看锚点怎样减少。"
+        explanation.text = "第三格现在模拟实时写字：绿色一旦提交就冻结；橙色尾部仍会随新点修正；Look-ahead 会暂缓最新 0/1/2 个几何点再决定方向。抬笔后全部提交。"
 
         summary.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         summary.textColor = .secondaryLabel
         summary.numberOfLines = 0
-        summary.text = "真实点 0 · 平滑点 0 · Fit 锚点 0 · Bezier 段 0"
+        summary.text = "真实点 0 · 平滑点 0 · 已冻结 0 段 · Active 0 段"
 
         toleranceLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
         toleranceLabel.textColor = .label
@@ -195,23 +196,48 @@ final class GeometryLabViewController: UIViewController {
         toleranceRow.alignment = .center
         toleranceRow.spacing = 12
 
+        let lookAheadLabel = UILabel()
+        lookAheadLabel.text = "Look-ahead"
+        lookAheadLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        lookAheadLabel.textColor = .label
+        lookAheadLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        lookAheadControl.selectedSegmentIndex = 1
+        lookAheadControl.addTarget(self, action: #selector(lookAheadChanged(_:)), for: .valueChanged)
+
+        let lookAheadRow = UIStackView(arrangedSubviews: [lookAheadLabel, lookAheadControl])
+        lookAheadRow.axis = .horizontal
+        lookAheadRow.alignment = .center
+        lookAheadRow.spacing = 12
+
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.fitTolerance = CGFloat(toleranceSlider.value)
-        canvas.onStats = { [weak self] rawCount, smoothCount, anchorCount, segmentCount, batches, samplesPerBatch in
+        canvas.lookAheadCount = lookAheadControl.selectedSegmentIndex
+        canvas.onStats = {
+            [weak self] rawCount,
+            smoothCount,
+            committedCount,
+            activeCount,
+            waitingCount,
+            batches,
+            samplesPerBatch in
             self?.summary.text = String(
-                format: "真实点 %d · 平滑点 %d · Fit 锚点 %d · Bezier 段 %d\nUIKit 批次 %d · %.1f 点/批",
+                format: "真实点 %d · 平滑点 %d · 已冻结 %d 段 · Active %d 段\n等待 %d 点 · UIKit 批次 %d · %.1f 点/批",
                 rawCount,
                 smoothCount,
-                anchorCount,
-                segmentCount,
+                committedCount,
+                activeCount,
+                waitingCount,
                 batches,
                 samplesPerBatch
             )
         }
 
-        let stack = UIStackView(arrangedSubviews: [explanation, summary, toleranceRow, canvas])
+        let stack = UIStackView(
+            arrangedSubviews: [explanation, summary, toleranceRow, lookAheadRow, canvas]
+        )
         stack.axis = .vertical
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
 
@@ -220,7 +246,8 @@ final class GeometryLabViewController: UIViewController {
             stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-            toleranceRow.heightAnchor.constraint(equalToConstant: 30)
+            toleranceRow.heightAnchor.constraint(equalToConstant: 30),
+            lookAheadRow.heightAnchor.constraint(equalToConstant: 30)
         ])
         canvas.setContentHuggingPriority(.defaultLow, for: .vertical)
     }
@@ -228,6 +255,10 @@ final class GeometryLabViewController: UIViewController {
     @objc private func toleranceChanged(_ sender: UISlider) {
         canvas.fitTolerance = CGFloat(sender.value)
         updateToleranceLabel()
+    }
+
+    @objc private func lookAheadChanged(_ sender: UISegmentedControl) {
+        canvas.lookAheadCount = sender.selectedSegmentIndex
     }
 
     private func updateToleranceLabel() {
@@ -247,13 +278,27 @@ private struct GeometryBezierSegment {
 }
 
 private final class GeometryComparisonCanvasView: UIView {
-    var onStats: ((Int, Int, Int, Int, Int, Double) -> Void)?
+    var onStats: ((Int, Int, Int, Int, Int, Int, Double) -> Void)?
 
     var fitTolerance: CGFloat = 2.5 {
         didSet {
-            fitTolerance = max(0.1, fitTolerance)
-            updateStats()
-            setNeedsDisplay()
+            let clamped = max(0.1, fitTolerance)
+            if clamped != fitTolerance {
+                fitTolerance = clamped
+                return
+            }
+            rebuildRealtimeFit()
+        }
+    }
+
+    var lookAheadCount: Int = 1 {
+        didSet {
+            let clamped = max(0, min(2, lookAheadCount))
+            if clamped != lookAheadCount {
+                lookAheadCount = clamped
+                return
+            }
+            rebuildRealtimeFit()
         }
     }
 
@@ -261,12 +306,22 @@ private final class GeometryComparisonCanvasView: UIView {
     private let panelGap: CGFloat = 10
     private let panelInset: CGFloat = 8
     private let panelTitleHeight: CGFloat = 28
+    private let activeTailSourcePoints = 14
+    private let commitChunkSourcePoints = 8
 
-    /// All geometry is stored in local coordinates of the first panel's drawable area.
+    /// Raw geometry is stored in local coordinates of the first panel's drawable area.
     private var points: [CGPoint] = []
     private var moveBatchCount = 0
     private var moveSampleCount = 0
     private var acceptingStroke = false
+
+    /// Realtime fit state. committedSegments never changes while a stroke continues.
+    private var committedSegments: [GeometryBezierSegment] = []
+    private var activeSegments: [GeometryBezierSegment] = []
+    private var activeAnchors: [CGPoint] = []
+    private var waitingPoints: [CGPoint] = []
+    private var latestSmoothed: [CGPoint] = []
+    private var committedSourceIndex = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -282,12 +337,12 @@ private final class GeometryComparisonCanvasView: UIView {
         backgroundColor = .clear
         isOpaque = false
         isMultipleTouchEnabled = false
-        accessibilityLabel = "Geometry comparison canvas"
+        accessibilityLabel = "Geometry realtime fitting canvas"
     }
 
     func clear() {
         resetStroke()
-        onStats?(0, 0, 0, 0, 0, 0)
+        onStats?(0, 0, 0, 0, 0, 0, 0)
         setNeedsDisplay()
     }
 
@@ -306,6 +361,7 @@ private final class GeometryComparisonCanvasView: UIView {
         resetStroke()
         acceptingStroke = true
         appendGeometryPoint(localPoint(from: location, in: rawPanel))
+        updateRealtimeFit(forceFlush: false)
         updateStats()
         setNeedsDisplay()
     }
@@ -334,6 +390,7 @@ private final class GeometryComparisonCanvasView: UIView {
             appendGeometryPoint(localPoint(from: sample.location(in: self), in: rawPanel))
         }
 
+        updateRealtimeFit(forceFlush: false)
         updateStats()
         setNeedsDisplay()
     }
@@ -347,12 +404,16 @@ private final class GeometryComparisonCanvasView: UIView {
 
         appendGeometryPoint(localPoint(from: touch.location(in: self), in: rawPanel))
         acceptingStroke = false
+        updateRealtimeFit(forceFlush: true)
         updateStats()
         setNeedsDisplay()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         acceptingStroke = false
+        updateRealtimeFit(forceFlush: true)
+        updateStats()
+        setNeedsDisplay()
     }
 
     private func resetStroke() {
@@ -360,6 +421,23 @@ private final class GeometryComparisonCanvasView: UIView {
         moveBatchCount = 0
         moveSampleCount = 0
         acceptingStroke = false
+        resetRealtimeState()
+    }
+
+    private func resetRealtimeState() {
+        committedSegments.removeAll(keepingCapacity: true)
+        activeSegments.removeAll(keepingCapacity: true)
+        activeAnchors.removeAll(keepingCapacity: true)
+        waitingPoints.removeAll(keepingCapacity: true)
+        latestSmoothed.removeAll(keepingCapacity: true)
+        committedSourceIndex = 0
+    }
+
+    private func rebuildRealtimeFit() {
+        resetRealtimeState()
+        updateRealtimeFit(forceFlush: !acceptingStroke)
+        updateStats()
+        setNeedsDisplay()
     }
 
     private func appendGeometryPoint(_ point: CGPoint) {
@@ -369,30 +447,80 @@ private final class GeometryComparisonCanvasView: UIView {
         points.append(point)
     }
 
-    private func processedGeometry() -> (
-        resampled: [CGPoint],
-        smoothed: [CGPoint],
-        anchors: [CGPoint],
-        segments: [GeometryBezierSegment]
-    ) {
+    private func processedInputs() -> (resampled: [CGPoint], smoothed: [CGPoint]) {
         let resampled = spatiallyResampled(points, spacing: resampleSpacing)
-        let smoothed = fivePointSmoothed(resampled)
-        let anchors = simplifiedAnchors(smoothed, tolerance: fitTolerance)
-        let segments = bezierSegments(from: anchors)
-        return (resampled, smoothed, anchors, segments)
+        return (resampled, fivePointSmoothed(resampled))
+    }
+
+    /// Streaming experiment: only the orange tail is refit. Older chunks are converted into
+    /// cubic Bezier segments and appended to committedSegments, then never touched again.
+    private func updateRealtimeFit(forceFlush: Bool) {
+        let processed = processedInputs()
+        latestSmoothed = processed.smoothed
+
+        guard !latestSmoothed.isEmpty else {
+            activeSegments.removeAll(keepingCapacity: true)
+            activeAnchors.removeAll(keepingCapacity: true)
+            waitingPoints.removeAll(keepingCapacity: true)
+            return
+        }
+
+        let visibleCount = forceFlush
+            ? latestSmoothed.count
+            : max(0, latestSmoothed.count - lookAheadCount)
+
+        if visibleCount < latestSmoothed.count {
+            waitingPoints = Array(latestSmoothed[visibleCount..<latestSmoothed.count])
+        } else {
+            waitingPoints.removeAll(keepingCapacity: true)
+        }
+
+        guard visibleCount > 0 else {
+            activeSegments.removeAll(keepingCapacity: true)
+            activeAnchors.removeAll(keepingCapacity: true)
+            return
+        }
+
+        committedSourceIndex = min(committedSourceIndex, visibleCount - 1)
+
+        if forceFlush {
+            let tail = Array(latestSmoothed[committedSourceIndex..<visibleCount])
+            let anchors = simplifiedAnchors(tail, tolerance: fitTolerance)
+            committedSegments.append(contentsOf: bezierSegments(from: anchors))
+            committedSourceIndex = visibleCount - 1
+            activeSegments.removeAll(keepingCapacity: true)
+            activeAnchors.removeAll(keepingCapacity: true)
+            waitingPoints.removeAll(keepingCapacity: true)
+            return
+        }
+
+        while visibleCount - committedSourceIndex > activeTailSourcePoints + commitChunkSourcePoints {
+            let chunkEndExclusive = min(
+                visibleCount,
+                committedSourceIndex + commitChunkSourcePoints + 1
+            )
+            let chunk = Array(latestSmoothed[committedSourceIndex..<chunkEndExclusive])
+            let anchors = simplifiedAnchors(chunk, tolerance: fitTolerance)
+            committedSegments.append(contentsOf: bezierSegments(from: anchors))
+            committedSourceIndex = chunkEndExclusive - 1
+        }
+
+        let activeInput = Array(latestSmoothed[committedSourceIndex..<visibleCount])
+        activeAnchors = simplifiedAnchors(activeInput, tolerance: fitTolerance)
+        activeSegments = bezierSegments(from: activeAnchors)
     }
 
     private func updateStats() {
-        let processed = processedGeometry()
         let average = moveBatchCount > 0
             ? Double(moveSampleCount) / Double(moveBatchCount)
             : 0
 
         onStats?(
             points.count,
-            processed.smoothed.count,
-            processed.anchors.count,
-            processed.segments.count,
+            latestSmoothed.count,
+            committedSegments.count,
+            activeSegments.count,
+            waitingPoints.count,
             moveBatchCount,
             average
         )
@@ -415,8 +543,8 @@ private final class GeometryComparisonCanvasView: UIView {
         )
         drawPanelBackground(
             panels[2],
-            title: String(format: "3  BEZIER FIT · ε %.1f pt", fitTolerance),
-            subtitle: "橙 = 锚点 · 蓝紫 = 控制点 · 绿 = 拟合曲线"
+            title: String(format: "3  REALTIME BEZIER · ε %.1f", fitTolerance),
+            subtitle: "绿 = committed · 橙 = active tail · 灰 = waiting"
         )
 
         guard !points.isEmpty else {
@@ -424,7 +552,7 @@ private final class GeometryComparisonCanvasView: UIView {
             return
         }
 
-        let processed = processedGeometry()
+        let processed = processedInputs()
         drawRawPanel(points, in: panels[0], context: context)
         drawSmoothPanel(
             original: processed.resampled,
@@ -432,13 +560,7 @@ private final class GeometryComparisonCanvasView: UIView {
             in: panels[1],
             context: context
         )
-        drawBezierFitPanel(
-            smoothed: processed.smoothed,
-            anchors: processed.anchors,
-            segments: processed.segments,
-            in: panels[2],
-            context: context
-        )
+        drawRealtimePanel(in: panels[2], context: context)
     }
 
     private func panelRects() -> [CGRect] {
@@ -531,10 +653,10 @@ private final class GeometryComparisonCanvasView: UIView {
             let mappedOriginal = original.map { displayPoint($0, in: panel) }
             let mappedSmoothed = smoothed.map { displayPoint($0, in: panel) }
 
-            context.setStrokeColor(UIColor.systemTeal.withAlphaComponent(0.45).cgColor)
+            context.setStrokeColor(UIColor.systemTeal.withAlphaComponent(0.42).cgColor)
             context.setLineWidth(0.9)
             for point in mappedOriginal {
-                let radius: CGFloat = 2.0
+                let radius: CGFloat = 2
                 context.strokeEllipse(
                     in: CGRect(
                         x: point.x - radius,
@@ -545,22 +667,70 @@ private final class GeometryComparisonCanvasView: UIView {
                 )
             }
 
-            context.setStrokeColor(UIColor.systemOrange.withAlphaComponent(0.22).cgColor)
-            context.setLineWidth(0.6)
-            for (before, after) in zip(mappedOriginal, mappedSmoothed) {
-                context.move(to: before)
-                context.addLine(to: after)
-            }
-            context.strokePath()
-
             UIColor.systemPurple.setStroke()
             let path = splinePath(mappedSmoothed)
             path.lineWidth = 2.5
             path.stroke()
+        }
+    }
 
-            context.setFillColor(UIColor.systemPink.withAlphaComponent(0.72).cgColor)
-            for point in mappedSmoothed {
-                let radius: CGFloat = 1.4
+    private func drawRealtimePanel(in panel: CGRect, context: CGContext) {
+        withPanelClip(panel, context: context) {
+            if !latestSmoothed.isEmpty {
+                let source = latestSmoothed.map { displayPoint($0, in: panel) }
+                UIColor.systemGray.withAlphaComponent(0.12).setStroke()
+                let sourcePath = polylinePath(source)
+                sourcePath.lineWidth = 0.7
+                sourcePath.stroke()
+            }
+
+            drawBezierSegments(
+                committedSegments,
+                in: panel,
+                color: .systemGreen,
+                lineWidth: 3
+            )
+
+            drawActiveHandles(activeSegments, in: panel, context: context)
+            drawBezierSegments(
+                activeSegments,
+                in: panel,
+                color: .systemOrange,
+                lineWidth: 3
+            )
+
+            context.setFillColor(UIColor.systemOrange.cgColor)
+            for anchor in activeAnchors {
+                let point = displayPoint(anchor, in: panel)
+                let radius: CGFloat = 2.5
+                context.fillEllipse(
+                    in: CGRect(
+                        x: point.x - radius,
+                        y: point.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            }
+
+            context.setFillColor(UIColor.systemGray.withAlphaComponent(0.75).cgColor)
+            for waiting in waitingPoints {
+                let point = displayPoint(waiting, in: panel)
+                let radius: CGFloat = 2.1
+                context.fillEllipse(
+                    in: CGRect(
+                        x: point.x - radius,
+                        y: point.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            }
+
+            if let boundary = committedSegments.last?.end {
+                let point = displayPoint(boundary, in: panel)
+                context.setFillColor(UIColor.systemGreen.cgColor)
+                let radius: CGFloat = 3.4
                 context.fillEllipse(
                     in: CGRect(
                         x: point.x - radius,
@@ -573,85 +743,45 @@ private final class GeometryComparisonCanvasView: UIView {
         }
     }
 
-    private func drawBezierFitPanel(
-        smoothed: [CGPoint],
-        anchors: [CGPoint],
-        segments: [GeometryBezierSegment],
+    private func drawBezierSegments(
+        _ segments: [GeometryBezierSegment],
+        in panel: CGRect,
+        color: UIColor,
+        lineWidth: CGFloat
+    ) {
+        guard let first = segments.first else { return }
+        let path = UIBezierPath()
+        path.move(to: displayPoint(first.start, in: panel))
+        for segment in segments {
+            path.addCurve(
+                to: displayPoint(segment.end, in: panel),
+                controlPoint1: displayPoint(segment.control1, in: panel),
+                controlPoint2: displayPoint(segment.control2, in: panel)
+            )
+        }
+        color.setStroke()
+        path.lineWidth = lineWidth
+        path.stroke()
+    }
+
+    private func drawActiveHandles(
+        _ segments: [GeometryBezierSegment],
         in panel: CGRect,
         context: CGContext
     ) {
-        withPanelClip(panel, context: context) {
-            let mappedSmoothed = smoothed.map { displayPoint($0, in: panel) }
-
-            UIColor.systemGray.withAlphaComponent(0.18).setStroke()
-            let sourcePath = polylinePath(mappedSmoothed)
-            sourcePath.lineWidth = 0.8
-            sourcePath.stroke()
-
-            context.saveGState()
-            context.setStrokeColor(UIColor.systemIndigo.withAlphaComponent(0.48).cgColor)
-            context.setLineWidth(0.8)
-            context.setLineDash(phase: 0, lengths: [3, 3])
-            for segment in segments {
-                let start = displayPoint(segment.start, in: panel)
-                let c1 = displayPoint(segment.control1, in: panel)
-                let c2 = displayPoint(segment.control2, in: panel)
-                let end = displayPoint(segment.end, in: panel)
-                context.move(to: start)
-                context.addLine(to: c1)
-                context.move(to: end)
-                context.addLine(to: c2)
-            }
-            context.strokePath()
-            context.restoreGState()
-
-            UIColor.systemGreen.setStroke()
-            let fittedPath = UIBezierPath()
-            if let first = segments.first {
-                fittedPath.move(to: displayPoint(first.start, in: panel))
-                for segment in segments {
-                    fittedPath.addCurve(
-                        to: displayPoint(segment.end, in: panel),
-                        controlPoint1: displayPoint(segment.control1, in: panel),
-                        controlPoint2: displayPoint(segment.control2, in: panel)
-                    )
-                }
-            } else if let firstAnchor = anchors.first {
-                fittedPath.move(to: displayPoint(firstAnchor, in: panel))
-            }
-            fittedPath.lineWidth = 3
-            fittedPath.stroke()
-
-            context.setFillColor(UIColor.systemOrange.cgColor)
-            for anchor in anchors {
-                let point = displayPoint(anchor, in: panel)
-                let radius: CGFloat = 3.2
-                context.fillEllipse(
-                    in: CGRect(
-                        x: point.x - radius,
-                        y: point.y - radius,
-                        width: radius * 2,
-                        height: radius * 2
-                    )
-                )
-            }
-
-            context.setFillColor(UIColor.systemIndigo.withAlphaComponent(0.82).cgColor)
-            for segment in segments {
-                for control in [segment.control1, segment.control2] {
-                    let point = displayPoint(control, in: panel)
-                    let radius: CGFloat = 2.3
-                    context.fillEllipse(
-                        in: CGRect(
-                            x: point.x - radius,
-                            y: point.y - radius,
-                            width: radius * 2,
-                            height: radius * 2
-                        )
-                    )
-                }
-            }
+        guard !segments.isEmpty else { return }
+        context.saveGState()
+        context.setStrokeColor(UIColor.systemIndigo.withAlphaComponent(0.42).cgColor)
+        context.setLineWidth(0.7)
+        context.setLineDash(phase: 0, lengths: [3, 3])
+        for segment in segments {
+            context.move(to: displayPoint(segment.start, in: panel))
+            context.addLine(to: displayPoint(segment.control1, in: panel))
+            context.move(to: displayPoint(segment.end, in: panel))
+            context.addLine(to: displayPoint(segment.control2, in: panel))
         }
+        context.strokePath()
+        context.restoreGState()
     }
 
     private func withPanelClip(
@@ -719,8 +849,7 @@ private final class GeometryComparisonCanvasView: UIView {
         return path
     }
 
-    /// Interpolating Catmull-Rom spline converted into cubic Bezier segments.
-    /// This still passes through every supplied point and is used only for the smoothing panel.
+    /// Interpolating Catmull-Rom spline used only as the visible result of the smoothing stage.
     private func splinePath(_ input: [CGPoint]) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = input.first else { return path }
@@ -826,8 +955,7 @@ private final class GeometryComparisonCanvasView: UIView {
         return result
     }
 
-    /// Ramer-Douglas-Peucker simplification: keep only points whose removal would exceed the
-    /// requested error tolerance. This is the experiment's "lower the degrees of freedom" step.
+    /// Ramer-Douglas-Peucker simplification: lower the degrees of freedom before Bezier rebuild.
     private func simplifiedAnchors(_ input: [CGPoint], tolerance: CGFloat) -> [CGPoint] {
         guard input.count > 2 else { return input }
 
@@ -853,8 +981,6 @@ private final class GeometryComparisonCanvasView: UIView {
         return Array(left.dropLast()) + right
     }
 
-    /// Turn the sparse anchors into cubic Bezier segments. Tangents are estimated from adjacent
-    /// anchors; handle length is tied to each segment so sparse anchors do not create huge overshoot.
     private func bezierSegments(from anchors: [CGPoint]) -> [GeometryBezierSegment] {
         guard anchors.count > 1 else { return [] }
         var result: [GeometryBezierSegment] = []
