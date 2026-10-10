@@ -1,5 +1,4 @@
 import UIKit
-import ObjectiveC.runtime
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,7 +6,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        GeometryLabExperimentBootstrap.install()
         return true
     }
 
@@ -20,30 +18,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 
-private enum GeometryLabExperimentBootstrap {
-    private static var installed = false
-
-    static func install() {
-        guard !installed else { return }
-        installed = true
-        let original = #selector(UIViewController.viewDidLayoutSubviews)
-        let replacement = #selector(GeometryLabViewController.od_experiment_viewDidLayoutSubviews)
-        guard
-            let originalMethod = class_getInstanceMethod(GeometryLabViewController.self, original),
-            let replacementMethod = class_getInstanceMethod(GeometryLabViewController.self, replacement)
-        else { return }
-        method_exchangeImplementations(originalMethod, replacementMethod)
-    }
-}
-
-extension GeometryLabViewController {
-    @objc fileprivate func od_experiment_viewDidLayoutSubviews() {
-        od_experiment_viewDidLayoutSubviews()
-        GeometryLabExperimentSupport.installSmoothExperiments(in: self)
-    }
-}
-
-private enum GeometryLabExperimentSupport {
+enum GeometryLabExperimentSupport {
     private static let pipelineButtonID = "geometry.smooth.compare.pipeline"
     private static let filterButtonID = "geometry.smooth.context.motion.filter"
 

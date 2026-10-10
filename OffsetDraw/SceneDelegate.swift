@@ -227,6 +227,7 @@ final class GeometryLabViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        GeometryLabExperimentSupport.installSmoothExperiments(in: self)
         let useSideInspector = view.bounds.width >= 700
         let desiredAxis: NSLayoutConstraint.Axis = useSideInspector ? .horizontal : .vertical
         guard rootStack.axis != desiredAxis else { return }
