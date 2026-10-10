@@ -68,8 +68,8 @@ enum GeometryLabExperimentSupport {
 
     private static func addLiveContextSection(to stack: UIStackView, session: LiveContextSession) {
         addDivider(to: stack)
-        addHeading("LIVE CONTEXT", to: stack)
-        addBody("直接在 RAW 里画。第二层会实时叠加灰色 Context、青色取样范围和方向箭头。拖动范围时可以立刻感受 Context 在看多远。", to: stack)
+        addHeading("LIVE CONTEXT CURVE", to: stack)
+        addBody("直接在 RAW 里画。第二层会实时画出完整 Context 曲线，并与紫色 Smooth 叠加。拖动 Context span，可以直接看这条曲线如何改变。")
 
         let container = UIStackView()
         container.accessibilityIdentifier = liveContextID
@@ -82,7 +82,7 @@ enum GeometryLabExperimentSupport {
             guard let toggle = action.sender as? UISwitch else { return }
             session?.enabled = toggle.isOn
         }, for: .valueChanged)
-        container.addArrangedSubview(switchRow(title: "Show live context", toggle: toggle))
+        container.addArrangedSubview(switchRow(title: "Show context curve", toggle: toggle))
 
         let value = UILabel()
         value.text = "60%"
@@ -448,24 +448,12 @@ private final class LiveContextSession: NSObject {
         overlay.smoothed = points
         guard points.count >= 3 else {
             overlay.reference = points
-            overlay.lookIndex = max(0, points.count - 1)
-            overlay.startDirection = .zero
-            overlay.endDirection = .zero
             overlay.setNeedsDisplay()
             return
         }
 
         let radius = max(2, min(points.count / 3, Int(round(CGFloat(points.count) * contextFraction * 0.22))))
-        let reference = ContextMath.lowFrequencyReference(points, radius: radius)
-        let span = max(2, Int(round(CGFloat(points.count - 1) * contextFraction)))
-        let lookIndex = min(points.count - 1, span)
-        let tailIndex = max(0, points.count - 1 - span)
-
-        overlay.reference = reference
-        overlay.lookIndex = lookIndex
-        overlay.tailIndex = tailIndex
-        overlay.startDirection = ContextMath.normalized(ContextMath.vector(from: reference[0], to: reference[lookIndex]))
-        overlay.endDirection = ContextMath.normalized(ContextMath.vector(from: reference[tailIndex], to: reference[reference.count - 1]))
+        overlay.reference = ContextMath.lowFrequencyReference(points, radius: radius)
         overlay.setNeedsDisplay()
     }
 }
@@ -474,10 +462,6 @@ private final class LiveContextOverlayView: UIView {
     var smoothed: [CGPoint] = []
     var reference: [CGPoint] = []
     var contextFraction: CGFloat = 0.60
-    var lookIndex = 0
-    var tailIndex = 0
-    var startDirection = CGVector.zero
-    var endDirection = CGVector.zero
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), !reference.isEmpty else { return }
@@ -492,25 +476,13 @@ private final class LiveContextOverlayView: UIView {
         context.clip()
 
         let mappedReference = reference.map { displayPoint($0, in: panel) }
-        drawPolyline(mappedReference, color: UIColor.systemGray.withAlphaComponent(0.65), width: 1.15, dash: [5, 4])
+        drawSpline(
+            mappedReference,
+            color: UIColor.systemCyan.withAlphaComponent(0.95),
+            width: 2.6
+        )
 
-        if lookIndex > 0, lookIndex < mappedReference.count {
-            drawPolyline(Array(mappedReference[0...lookIndex]), color: UIColor.systemCyan.withAlphaComponent(0.95), width: 2.2)
-            drawPoint(mappedReference[lookIndex], color: .systemCyan, radius: 3.4)
-        }
-
-        if tailIndex >= 0, tailIndex < mappedReference.count - 1 {
-            drawPolyline(Array(mappedReference[tailIndex...]), color: UIColor.systemCyan.withAlphaComponent(0.38), width: 1.7)
-        }
-
-        if let first = mappedReference.first, hypot(startDirection.dx, startDirection.dy) > 0.001 {
-            drawArrow(from: first, direction: startDirection, color: .systemCyan)
-        }
-        if let last = mappedReference.last, hypot(endDirection.dx, endDirection.dy) > 0.001 {
-            drawArrow(from: last, direction: CGVector(dx: -endDirection.dx, dy: -endDirection.dy), color: UIColor.systemCyan.withAlphaComponent(0.55))
-        }
-
-        let text = String(format: "LIVE CTX %.0f%% · %d pts", contextFraction * 100, min(reference.count, lookIndex + 1))
+        let text = String(format: "CONTEXT CURVE %.0f%%", contextFraction * 100)
         text.draw(
             at: CGPoint(x: content.minX + 8, y: content.minY + 6),
             withAttributes: [
@@ -549,40 +521,34 @@ private final class LiveContextOverlayView: UIView {
         return CGPoint(x: content.minX + point.x, y: content.minY + point.y)
     }
 
-    private func drawPolyline(_ points: [CGPoint], color: UIColor, width: CGFloat, dash: [CGFloat] = []) {
+    private func drawSpline(_ points: [CGPoint], color: UIColor, width: CGFloat) {
         guard let first = points.first else { return }
         let path = UIBezierPath()
         path.move(to: first)
-        for point in points.dropFirst() { path.addLine(to: point) }
+
+        if points.count == 2 {
+            path.addLine(to: points[1])
+        } else if points.count > 2 {
+            for index in 0..<(points.count - 1) {
+                let p0 = points[max(0, index - 1)]
+                let p1 = points[index]
+                let p2 = points[index + 1]
+                let p3 = points[min(points.count - 1, index + 2)]
+                let c1 = CGPoint(
+                    x: p1.x + (p2.x - p0.x) / 6,
+                    y: p1.y + (p2.y - p0.y) / 6
+                )
+                let c2 = CGPoint(
+                    x: p2.x - (p3.x - p1.x) / 6,
+                    y: p2.y - (p3.y - p1.y) / 6
+                )
+                path.addCurve(to: p2, controlPoint1: c1, controlPoint2: c2)
+            }
+        }
+
         path.lineWidth = width
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        if !dash.isEmpty { path.setLineDash(dash, count: dash.count, phase: 0) }
-        color.setStroke()
-        path.stroke()
-    }
-
-    private func drawPoint(_ point: CGPoint, color: UIColor, radius: CGFloat) {
-        color.setFill()
-        UIBezierPath(ovalIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)).fill()
-    }
-
-    private func drawArrow(from start: CGPoint, direction: CGVector, color: UIColor) {
-        let d = ContextMath.normalized(direction)
-        let length: CGFloat = 48
-        let end = CGPoint(x: start.x + d.dx * length, y: start.y + d.dy * length)
-        let normal = CGVector(dx: -d.dy, dy: d.dx)
-        let head: CGFloat = 8
-
-        let path = UIBezierPath()
-        path.move(to: start)
-        path.addLine(to: end)
-        path.move(to: end)
-        path.addLine(to: CGPoint(x: end.x - d.dx * head + normal.dx * head * 0.55, y: end.y - d.dy * head + normal.dy * head * 0.55))
-        path.move(to: end)
-        path.addLine(to: CGPoint(x: end.x - d.dx * head - normal.dx * head * 0.55, y: end.y - d.dy * head - normal.dy * head * 0.55))
-        path.lineWidth = 1.8
-        path.lineCapStyle = .round
         color.setStroke()
         path.stroke()
     }
