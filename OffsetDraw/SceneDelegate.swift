@@ -147,16 +147,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 private enum GeometryLabLayer: Int, CaseIterable {
     case mainEvents
     case samples
+    case resampled
     case polyline
     case spline
+    case resampledSpline
     case robust
 
     var title: String {
         switch self {
         case .mainEvents: "UIKit"
         case .samples: "Samples"
+        case .resampled: "Resampled"
         case .polyline: "Polyline"
-        case .spline: "Spline"
+        case .spline: "Raw Spline"
+        case .resampledSpline: "Re Spline"
         case .robust: "Robust"
         }
     }
@@ -165,10 +169,16 @@ private enum GeometryLabLayer: Int, CaseIterable {
         switch self {
         case .mainEvents: .systemRed
         case .samples: .label
+        case .resampled: .systemTeal
         case .polyline: .systemOrange
         case .spline: .systemBlue
+        case .resampledSpline: .systemPurple
         case .robust: .systemGreen
         }
+    }
+
+    var isVisibleByDefault: Bool {
+        self != .robust
     }
 }
 
@@ -189,32 +199,32 @@ final class GeometryLabViewController: UIViewController {
         explanation.font = .systemFont(ofSize: 13, weight: .regular)
         explanation.textColor = .secondaryLabel
         explanation.numberOfLines = 0
-        explanation.text = "大红圈 = 每次 UIKit touchesMoved 的主事件点；小黑点 = coalescedTouches 整批真实采样。主事件点也属于这一批。无 predicted touches。"
+        explanation.text = "黑点 = 原始真实采样；青圈 = 沿真实折线每 3 pt 重新等距采样。蓝线直接拟合原始点，紫线拟合等距点。无 predicted touches。"
 
-        let controls = UIStackView()
-        controls.axis = .horizontal
+        let inputControls = makeControlRow([
+            .mainEvents, .samples, .resampled
+        ])
+        let pathControls = makeControlRow([
+            .polyline, .spline, .resampledSpline, .robust
+        ])
+        let controls = UIStackView(arrangedSubviews: [inputControls, pathControls])
+        controls.axis = .vertical
         controls.spacing = 6
-        controls.distribution = .fillEqually
-        for layer in GeometryLabLayer.allCases {
-            let button = makeLayerButton(layer)
-            layerButtons[layer] = button
-            controls.addArrangedSubview(button)
-        }
 
         summary.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         summary.textColor = .secondaryLabel
         summary.numberOfLines = 0
-        summary.text = "UIKit 批次 0 · 额外 coalesced 0 · 总采样 0 · 剔除 0"
+        summary.text = "UIKit 批次 0 · 原始采样 0 · 等距点 0 · 3.0 pt"
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.layer.cornerRadius = 16
         canvas.clipsToBounds = true
-        canvas.onStats = { [weak self] batches, extras, samples, removed in
+        canvas.onStats = { [weak self] batches, extras, samples, resampled, removed in
             guard let self else { return }
             let average = batches > 0 ? Double(samples) / Double(batches) : 0
             self.summary.text = String(
-                format: "UIKit 批次 %d · 额外 coalesced %d · 总采样 %d · %.1f 点/批\nRobust 剔除 %d",
-                batches, extras, samples, average, removed
+                format: "UIKit 批次 %d · 额外 coalesced %d · 原始采样 %d · %.1f 点/批\n等距点 %d · 间距 3.0 pt · Robust 剔除 %d",
+                batches, extras, samples, average, resampled, removed
             )
         }
 
@@ -229,9 +239,23 @@ final class GeometryLabViewController: UIViewController {
             stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-            controls.heightAnchor.constraint(equalToConstant: 38)
+            inputControls.heightAnchor.constraint(equalToConstant: 36),
+            pathControls.heightAnchor.constraint(equalToConstant: 36)
         ])
         canvas.setContentHuggingPriority(.defaultLow, for: .vertical)
+    }
+
+    private func makeControlRow(_ layers: [GeometryLabLayer]) -> UIStackView {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.distribution = .fillEqually
+        for layer in layers {
+            let button = makeLayerButton(layer)
+            layerButtons[layer] = button
+            row.addArrangedSubview(button)
+        }
+        return row
     }
 
     private func makeLayerButton(_ layer: GeometryLabLayer) -> UIButton {
@@ -242,7 +266,7 @@ final class GeometryLabViewController: UIViewController {
         button.layer.cornerRadius = 9
         button.layer.borderWidth = 1
         button.layer.borderColor = layer.color.withAlphaComponent(0.35).cgColor
-        button.isSelected = true
+        button.isSelected = layer.isVisibleByDefault
         button.addTarget(self, action: #selector(toggleLayer(_:)), for: .touchUpInside)
         refresh(button, layer: layer)
         return button
@@ -267,15 +291,16 @@ final class GeometryLabViewController: UIViewController {
 }
 
 private final class GeometryLabCanvasView: UIView {
-    var onStats: ((Int, Int, Int, Int) -> Void)?
+    var onStats: ((Int, Int, Int, Int, Int) -> Void)?
 
+    private let resampleSpacing: CGFloat = 3
     private var points: [CGPoint] = []
     private var sampleMarkers: [CGPoint] = []
     private var mainEventMarkers: [CGPoint] = []
     private var moveBatchCount = 0
     private var moveSampleCount = 0
     private var moveExtraSampleCount = 0
-    private var visibleLayers = Set(GeometryLabLayer.allCases)
+    private var visibleLayers = Set(GeometryLabLayer.allCases.filter(\.isVisibleByDefault))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -302,7 +327,7 @@ private final class GeometryLabCanvasView: UIView {
 
     func clear() {
         resetStroke()
-        onStats?(0, 0, 0, 0)
+        onStats?(0, 0, 0, 0, 0)
         setNeedsDisplay()
     }
 
@@ -364,8 +389,15 @@ private final class GeometryLabCanvasView: UIView {
     }
 
     private func update() {
+        let resampled = spatiallyResampled(points, spacing: resampleSpacing)
         let result = robustResult(points)
-        onStats?(moveBatchCount, moveExtraSampleCount, moveSampleCount, result.removed.count)
+        onStats?(
+            moveBatchCount,
+            moveExtraSampleCount,
+            moveSampleCount,
+            resampled.count,
+            result.removed.count
+        )
         setNeedsDisplay()
     }
 
@@ -380,10 +412,11 @@ private final class GeometryLabCanvasView: UIView {
             return
         }
 
+        let resampled = spatiallyResampled(points, spacing: resampleSpacing)
         let robust = robustResult(points)
 
         if visibleLayers.contains(.polyline) {
-            GeometryLabLayer.polyline.color.withAlphaComponent(0.55).setStroke()
+            GeometryLabLayer.polyline.color.withAlphaComponent(0.5).setStroke()
             let path = polylinePath(points)
             path.lineWidth = 1
             path.stroke()
@@ -392,7 +425,14 @@ private final class GeometryLabCanvasView: UIView {
         if visibleLayers.contains(.spline) {
             GeometryLabLayer.spline.color.setStroke()
             let path = splinePath(points)
-            path.lineWidth = 2
+            path.lineWidth = 1.8
+            path.stroke()
+        }
+
+        if visibleLayers.contains(.resampledSpline) {
+            GeometryLabLayer.resampledSpline.color.setStroke()
+            let path = splinePath(resampled)
+            path.lineWidth = 2.4
             path.stroke()
         }
 
@@ -404,8 +444,9 @@ private final class GeometryLabCanvasView: UIView {
             drawRemoved(robust.removed, in: context)
         }
 
-        // Draw the input markers last so the relationship between UIKit delivery and the
-        // higher-frequency samples remains visible even when the path layers overlap them.
+        if visibleLayers.contains(.resampled) {
+            drawResampled(resampled, in: context)
+        }
         if visibleLayers.contains(.samples) {
             drawSamples(in: context)
         }
@@ -436,7 +477,7 @@ private final class GeometryLabCanvasView: UIView {
     }
 
     private func drawHint(in context: CGContext) {
-        let text = "画一条线：小点是一批内采样，大圈是每批 UIKit 主事件"
+        let text = "慢画再快画：比较黑色原始点与青色 3 pt 等距点"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 16, weight: .medium),
             .foregroundColor: UIColor.tertiaryLabel
@@ -455,6 +496,17 @@ private final class GeometryLabCanvasView: UIView {
         context.restoreGState()
     }
 
+    private func drawResampled(_ resampled: [CGPoint], in context: CGContext) {
+        context.saveGState()
+        context.setStrokeColor(GeometryLabLayer.resampled.color.cgColor)
+        context.setLineWidth(1.4)
+        for point in resampled {
+            let r: CGFloat = 3.2
+            context.strokeEllipse(in: CGRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2))
+        }
+        context.restoreGState()
+    }
+
     private func drawMainEvents(in context: CGContext) {
         context.saveGState()
         context.setStrokeColor(GeometryLabLayer.mainEvents.color.cgColor)
@@ -469,7 +521,7 @@ private final class GeometryLabCanvasView: UIView {
     private func drawRemoved(_ removed: [CGPoint], in context: CGContext) {
         guard !removed.isEmpty else { return }
         context.saveGState()
-        context.setStrokeColor(UIColor.systemPurple.cgColor)
+        context.setStrokeColor(UIColor.systemPink.cgColor)
         context.setLineWidth(1.5)
         for point in removed {
             let r: CGFloat = 4
@@ -491,7 +543,8 @@ private final class GeometryLabCanvasView: UIView {
     }
 
     /// Interpolating Catmull-Rom spline converted into cubic Bezier segments.
-    /// The curve passes through every supplied point, so a bad sample visibly bends the curve.
+    /// The exact same curve builder is used for raw and spatially resampled points so the
+    /// experiment isolates only the point distribution.
     private func splinePath(_ input: [CGPoint]) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = input.first else { return path }
@@ -518,6 +571,47 @@ private final class GeometryLabCanvasView: UIView {
             path.addCurve(to: p2, controlPoint1: control1, controlPoint2: control2)
         }
         return path
+    }
+
+    /// Converts time-spaced Pencil samples into approximately equal arc-length samples.
+    /// It does not predict the future and it does not move the source path: every generated
+    /// point lies on an already observed raw polyline segment.
+    private func spatiallyResampled(_ input: [CGPoint], spacing: CGFloat) -> [CGPoint] {
+        guard input.count > 1, spacing > 0 else { return input }
+
+        var result: [CGPoint] = [input[0]]
+        var distanceSinceLastOutput: CGFloat = 0
+
+        for index in 1..<input.count {
+            var segmentStart = input[index - 1]
+            let segmentEnd = input[index]
+            var remainingLength = distance(segmentStart, segmentEnd)
+
+            guard remainingLength > 0.001 else { continue }
+
+            while distanceSinceLastOutput + remainingLength >= spacing {
+                let needed = spacing - distanceSinceLastOutput
+                let t = needed / remainingLength
+                let generated = CGPoint(
+                    x: segmentStart.x + (segmentEnd.x - segmentStart.x) * t,
+                    y: segmentStart.y + (segmentEnd.y - segmentStart.y) * t
+                )
+                result.append(generated)
+                segmentStart = generated
+                remainingLength = distance(segmentStart, segmentEnd)
+                distanceSinceLastOutput = 0
+            }
+
+            distanceSinceLastOutput += remainingLength
+        }
+
+        if let final = input.last,
+           let lastOutput = result.last,
+           distance(lastOutput, final) > 0.5 {
+            result.append(final)
+        }
+
+        return result
     }
 
     /// First experiment: reject only isolated "out and back" spikes. A candidate must deviate
