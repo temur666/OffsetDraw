@@ -145,14 +145,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 // MARK: - Geometry Lab
 
 private enum GeometryLabLayer: Int, CaseIterable {
-    case rawPoints
+    case mainEvents
+    case samples
     case polyline
     case spline
     case robust
 
     var title: String {
         switch self {
-        case .rawPoints: "Points"
+        case .mainEvents: "UIKit"
+        case .samples: "Samples"
         case .polyline: "Polyline"
         case .spline: "Spline"
         case .robust: "Robust"
@@ -161,7 +163,8 @@ private enum GeometryLabLayer: Int, CaseIterable {
 
     var color: UIColor {
         switch self {
-        case .rawPoints: .label
+        case .mainEvents: .systemRed
+        case .samples: .label
         case .polyline: .systemOrange
         case .spline: .systemBlue
         case .robust: .systemGreen
@@ -186,11 +189,11 @@ final class GeometryLabViewController: UIViewController {
         explanation.font = .systemFont(ofSize: 13, weight: .regular)
         explanation.textColor = .secondaryLabel
         explanation.numberOfLines = 0
-        explanation.text = "只看几何：Pencil → 采样点 → 折线 → 局部曲线 → 异常点修正。无压力、无笔宽、无 predicted touches。"
+        explanation.text = "大红圈 = 每次 UIKit touchesMoved 的主事件点；小黑点 = coalescedTouches 整批真实采样。主事件点也属于这一批。无 predicted touches。"
 
         let controls = UIStackView()
         controls.axis = .horizontal
-        controls.spacing = 8
+        controls.spacing = 6
         controls.distribution = .fillEqually
         for layer in GeometryLabLayer.allCases {
             let button = makeLayerButton(layer)
@@ -200,13 +203,19 @@ final class GeometryLabViewController: UIViewController {
 
         summary.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         summary.textColor = .secondaryLabel
-        summary.text = "采样 0 · 剔除 0"
+        summary.numberOfLines = 0
+        summary.text = "UIKit 批次 0 · 额外 coalesced 0 · 总采样 0 · 剔除 0"
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
         canvas.layer.cornerRadius = 16
         canvas.clipsToBounds = true
-        canvas.onStats = { [weak self] samples, removed in
-            self?.summary.text = "采样 \(samples) · 剔除 \(removed)"
+        canvas.onStats = { [weak self] batches, extras, samples, removed in
+            guard let self else { return }
+            let average = batches > 0 ? Double(samples) / Double(batches) : 0
+            self.summary.text = String(
+                format: "UIKit 批次 %d · 额外 coalesced %d · 总采样 %d · %.1f 点/批\nRobust 剔除 %d",
+                batches, extras, samples, average, removed
+            )
         }
 
         let stack = UIStackView(arrangedSubviews: [explanation, controls, summary, canvas])
@@ -229,7 +238,7 @@ final class GeometryLabViewController: UIViewController {
         let button = UIButton(type: .system)
         button.tag = layer.rawValue
         button.setTitle(layer.title, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+        button.titleLabel?.font = .systemFont(ofSize: 11, weight: .semibold)
         button.layer.cornerRadius = 9
         button.layer.borderWidth = 1
         button.layer.borderColor = layer.color.withAlphaComponent(0.35).cgColor
@@ -258,9 +267,14 @@ final class GeometryLabViewController: UIViewController {
 }
 
 private final class GeometryLabCanvasView: UIView {
-    var onStats: ((Int, Int) -> Void)?
+    var onStats: ((Int, Int, Int, Int) -> Void)?
 
     private var points: [CGPoint] = []
+    private var sampleMarkers: [CGPoint] = []
+    private var mainEventMarkers: [CGPoint] = []
+    private var moveBatchCount = 0
+    private var moveSampleCount = 0
+    private var moveExtraSampleCount = 0
     private var visibleLayers = Set(GeometryLabLayer.allCases)
 
     override init(frame: CGRect) {
@@ -287,41 +301,71 @@ private final class GeometryLabCanvasView: UIView {
     }
 
     func clear() {
-        points.removeAll(keepingCapacity: true)
-        onStats?(0, 0)
+        resetStroke()
+        onStats?(0, 0, 0, 0)
         setNeedsDisplay()
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        points.removeAll(keepingCapacity: true)
+        resetStroke()
         guard let touch = touches.first else { return }
-        append(touch.location(in: self))
+        let point = touch.location(in: self)
+        appendGeometryPoint(point)
+        mainEventMarkers.append(point)
         update()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
-        let samples = event?.coalescedTouches(for: touch) ?? [touch]
-        for sample in samples {
-            append(sample.location(in: self))
+
+        var batch = event?.coalescedTouches(for: touch) ?? [touch]
+        let mainPoint = touch.location(in: self)
+        let containsMain = batch.contains { sample in
+            abs(sample.timestamp - touch.timestamp) < 0.000_001
+                && distance(sample.location(in: self), mainPoint) < 0.01
         }
+        if !containsMain {
+            batch.append(touch)
+        }
+
+        moveBatchCount += 1
+        moveSampleCount += batch.count
+        moveExtraSampleCount += max(0, batch.count - 1)
+
+        for sample in batch {
+            let point = sample.location(in: self)
+            sampleMarkers.append(point)
+            appendGeometryPoint(point)
+        }
+        mainEventMarkers.append(mainPoint)
         update()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
-        append(touch.location(in: self))
+        let point = touch.location(in: self)
+        appendGeometryPoint(point)
+        mainEventMarkers.append(point)
         update()
     }
 
-    private func append(_ point: CGPoint) {
-        if let last = points.last, hypot(point.x - last.x, point.y - last.y) < 0.001 { return }
+    private func resetStroke() {
+        points.removeAll(keepingCapacity: true)
+        sampleMarkers.removeAll(keepingCapacity: true)
+        mainEventMarkers.removeAll(keepingCapacity: true)
+        moveBatchCount = 0
+        moveSampleCount = 0
+        moveExtraSampleCount = 0
+    }
+
+    private func appendGeometryPoint(_ point: CGPoint) {
+        if let last = points.last, distance(last, point) < 0.001 { return }
         points.append(point)
     }
 
     private func update() {
         let result = robustResult(points)
-        onStats?(points.count, result.removed.count)
+        onStats?(moveBatchCount, moveExtraSampleCount, moveSampleCount, result.removed.count)
         setNeedsDisplay()
     }
 
@@ -360,8 +404,13 @@ private final class GeometryLabCanvasView: UIView {
             drawRemoved(robust.removed, in: context)
         }
 
-        if visibleLayers.contains(.rawPoints) {
-            drawRawPoints(in: context)
+        // Draw the input markers last so the relationship between UIKit delivery and the
+        // higher-frequency samples remains visible even when the path layers overlap them.
+        if visibleLayers.contains(.samples) {
+            drawSamples(in: context)
+        }
+        if visibleLayers.contains(.mainEvents) {
+            drawMainEvents(in: context)
         }
     }
 
@@ -387,20 +436,32 @@ private final class GeometryLabCanvasView: UIView {
     }
 
     private func drawHint(in context: CGContext) {
-        let text = "画一条曲线，观察点怎样变成线"
+        let text = "画一条线：小点是一批内采样，大圈是每批 UIKit 主事件"
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 17, weight: .medium),
+            .font: UIFont.systemFont(ofSize: 16, weight: .medium),
             .foregroundColor: UIColor.tertiaryLabel
         ]
         let size = text.size(withAttributes: attributes)
         text.draw(at: CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2), withAttributes: attributes)
     }
 
-    private func drawRawPoints(in context: CGContext) {
+    private func drawSamples(in context: CGContext) {
         context.saveGState()
-        context.setFillColor(GeometryLabLayer.rawPoints.color.withAlphaComponent(0.72).cgColor)
-        for point in points {
-            context.fillEllipse(in: CGRect(x: point.x - 1.7, y: point.y - 1.7, width: 3.4, height: 3.4))
+        context.setFillColor(GeometryLabLayer.samples.color.withAlphaComponent(0.68).cgColor)
+        for point in sampleMarkers {
+            let r: CGFloat = 1.6
+            context.fillEllipse(in: CGRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2))
+        }
+        context.restoreGState()
+    }
+
+    private func drawMainEvents(in context: CGContext) {
+        context.saveGState()
+        context.setStrokeColor(GeometryLabLayer.mainEvents.color.cgColor)
+        context.setLineWidth(2)
+        for point in mainEventMarkers {
+            let r: CGFloat = 5.2
+            context.strokeEllipse(in: CGRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2))
         }
         context.restoreGState()
     }
@@ -408,7 +469,7 @@ private final class GeometryLabCanvasView: UIView {
     private func drawRemoved(_ removed: [CGPoint], in context: CGContext) {
         guard !removed.isEmpty else { return }
         context.saveGState()
-        context.setStrokeColor(UIColor.systemRed.cgColor)
+        context.setStrokeColor(UIColor.systemPurple.cgColor)
         context.setLineWidth(1.5)
         for point in removed {
             let r: CGFloat = 4
