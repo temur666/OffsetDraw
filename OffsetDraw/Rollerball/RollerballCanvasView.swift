@@ -165,7 +165,7 @@ final class RollerballCanvasView: UIView {
             setNeedsDisplay()
             return
         }
-        let samples = event.predictedTouches(for: touch).map { sample -> RollerballInputSample in
+        let samples = (event.predictedTouches(for: touch) ?? []).map { sample -> RollerballInputSample in
             let point = sample.location(in: self)
             return RollerballInputSample(x: point.x, y: point.y, time: sample.timestamp,
                                          pressure: pressure(sample))
