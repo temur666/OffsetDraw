@@ -69,7 +69,10 @@ enum GeometryLabExperimentSupport {
     private static func addLiveContextSection(to stack: UIStackView, session: LiveContextSession) {
         addDivider(to: stack)
         addHeading("LIVE CONTEXT CURVE", to: stack)
-        addBody("直接在 RAW 里画。第二层会实时画出完整 Context 曲线，并与紫色 Smooth 叠加。拖动 Context span，可以直接看这条曲线如何改变。")
+        addBody(
+            "直接在 RAW 里画。第二层会实时画出完整 Context 曲线，并与紫色 Smooth 叠加。拖动 Context span，可以直接看这条曲线如何改变。",
+            to: stack
+        )
 
         let container = UIStackView()
         container.accessibilityIdentifier = liveContextID
