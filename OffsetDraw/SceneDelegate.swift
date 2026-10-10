@@ -676,14 +676,6 @@ private final class GeometryComparisonCanvasView: UIView {
 
     private func drawRealtimePanel(in panel: CGRect, context: CGContext) {
         withPanelClip(panel, context: context) {
-            if !latestSmoothed.isEmpty {
-                let source = latestSmoothed.map { displayPoint($0, in: panel) }
-                UIColor.systemGray.withAlphaComponent(0.12).setStroke()
-                let sourcePath = polylinePath(source)
-                sourcePath.lineWidth = 0.7
-                sourcePath.stroke()
-            }
-
             drawBezierSegments(
                 committedSegments,
                 in: panel,
