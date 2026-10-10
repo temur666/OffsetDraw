@@ -171,21 +171,23 @@ final class GeometryLabViewController: UIViewController {
         explanation.font = .systemFont(ofSize: 13)
         explanation.textColor = .secondaryLabel
         explanation.numberOfLines = 0
-        explanation.text = "只在第一格画一笔。下面两格自动使用同一份真实输入：先比较点分布，再单独比较两条拟合曲线。"
+        explanation.text = "只在第一格画一笔。第二格让 Catmull-Rom 穿过原始采样点；第三格先做 3 pt 等距采样，再用 5 点局部平滑移动这些点，最后使用同一套 Spline。"
 
         summary.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         summary.textColor = .secondaryLabel
         summary.numberOfLines = 0
-        summary.text = "真实点 0 · 等距点 0 · UIKit 批次 0"
+        summary.text = "真实点 0 · 平滑点 0 · 平均修正 0.00 pt · 最大 0.00 pt"
 
         canvas.translatesAutoresizingMaskIntoConstraints = false
-        canvas.onStats = { [weak self] rawCount, resampledCount, batches, samplesPerBatch in
+        canvas.onStats = { [weak self] rawCount, fitCount, batches, samplesPerBatch, averageCorrection, maxCorrection in
             self?.summary.text = String(
-                format: "真实点 %d · 等距点 %d · UIKit 批次 %d · %.1f 点/批",
+                format: "真实点 %d · 平滑点 %d · UIKit 批次 %d · %.1f 点/批\n平均修正 %.2f pt · 最大修正 %.2f pt",
                 rawCount,
-                resampledCount,
+                fitCount,
                 batches,
-                samplesPerBatch
+                samplesPerBatch,
+                averageCorrection,
+                maxCorrection
             )
         }
 
@@ -210,7 +212,7 @@ final class GeometryLabViewController: UIViewController {
 }
 
 private final class GeometryComparisonCanvasView: UIView {
-    var onStats: ((Int, Int, Int, Double) -> Void)?
+    var onStats: ((Int, Int, Int, Double, Double, Double) -> Void)?
 
     private let resampleSpacing: CGFloat = 3
     private let panelGap: CGFloat = 10
@@ -242,7 +244,7 @@ private final class GeometryComparisonCanvasView: UIView {
 
     func clear() {
         resetStroke()
-        onStats?(0, 0, 0, 0)
+        onStats?(0, 0, 0, 0, 0, 0)
         setNeedsDisplay()
     }
 
@@ -323,12 +325,42 @@ private final class GeometryComparisonCanvasView: UIView {
         points.append(point)
     }
 
-    private func updateStats() {
+    private func fitInputs() -> (resampled: [CGPoint], smoothed: [CGPoint]) {
         let resampled = spatiallyResampled(points, spacing: resampleSpacing)
+        return (resampled, fivePointSmoothed(resampled))
+    }
+
+    private func correctionStats(
+        original: [CGPoint],
+        smoothed: [CGPoint]
+    ) -> (average: Double, maximum: Double) {
+        guard original.count == smoothed.count, !original.isEmpty else {
+            return (0, 0)
+        }
+
+        let corrections = zip(original, smoothed).map { distance($0.0, $0.1) }
+        let total = corrections.reduce(CGFloat.zero, +)
+        return (
+            Double(total / CGFloat(corrections.count)),
+            Double(corrections.max() ?? 0)
+        )
+    }
+
+    private func updateStats() {
+        let fit = fitInputs()
+        let correction = correctionStats(original: fit.resampled, smoothed: fit.smoothed)
         let average = moveBatchCount > 0
             ? Double(moveSampleCount) / Double(moveBatchCount)
             : 0
-        onStats?(points.count, resampled.count, moveBatchCount, average)
+
+        onStats?(
+            points.count,
+            fit.smoothed.count,
+            moveBatchCount,
+            average,
+            correction.average,
+            correction.maximum
+        )
     }
 
     override func draw(_ rect: CGRect) {
@@ -336,19 +368,36 @@ private final class GeometryComparisonCanvasView: UIView {
         let panels = panelRects()
         guard panels.count == 3 else { return }
 
-        drawPanelBackground(panels[0], title: "1  RAW SAMPLES", subtitle: "真实采样点 · 在这里画")
-        drawPanelBackground(panels[1], title: "2  RESAMPLED · 3 pt", subtitle: "沿真实折线重新等距取点")
-        drawPanelBackground(panels[2], title: "3  CURVE COMPARE", subtitle: "蓝 = Raw spline · 紫 = Resampled spline")
+        drawPanelBackground(
+            panels[0],
+            title: "1  RAW SAMPLES",
+            subtitle: "真实 coalesced 点 · 在这里画"
+        )
+        drawPanelBackground(
+            panels[1],
+            title: "2  INTERPOLATION",
+            subtitle: "蓝线 · Catmull-Rom 穿过原始点"
+        )
+        drawPanelBackground(
+            panels[2],
+            title: "3  SMOOTH FIT · 5 POINTS",
+            subtitle: "3 pt 等距 → 局部平滑 → 同一 Spline"
+        )
 
         guard !points.isEmpty else {
             drawEmptyHint(in: panels[0])
             return
         }
 
-        let resampled = spatiallyResampled(points, spacing: resampleSpacing)
+        let fit = fitInputs()
         drawRawPanel(points, in: panels[0], context: context)
-        drawResampledPanel(resampled, in: panels[1], context: context)
-        drawCurvePanel(raw: points, resampled: resampled, in: panels[2], context: context)
+        drawInterpolationPanel(points, in: panels[1], context: context)
+        drawSmoothFitPanel(
+            original: fit.resampled,
+            smoothed: fit.smoothed,
+            in: panels[2],
+            context: context
+        )
     }
 
     private func panelRects() -> [CGRect] {
@@ -416,7 +465,7 @@ private final class GeometryComparisonCanvasView: UIView {
             path.lineWidth = 0.8
             path.stroke()
 
-            context.setFillColor(UIColor.label.withAlphaComponent(0.8).cgColor)
+            context.setFillColor(UIColor.label.withAlphaComponent(0.82).cgColor)
             for point in mapped {
                 let radius: CGFloat = 1.8
                 context.fillEllipse(
@@ -431,19 +480,56 @@ private final class GeometryComparisonCanvasView: UIView {
         }
     }
 
-    private func drawResampledPanel(_ input: [CGPoint], in panel: CGRect, context: CGContext) {
+    private func drawInterpolationPanel(
+        _ input: [CGPoint],
+        in panel: CGRect,
+        context: CGContext
+    ) {
         withPanelClip(panel, context: context) {
             let mapped = input.map { displayPoint($0, in: panel) }
 
-            UIColor.systemTeal.withAlphaComponent(0.22).setStroke()
-            let path = polylinePath(mapped)
-            path.lineWidth = 0.8
-            path.stroke()
-
-            context.setStrokeColor(UIColor.systemTeal.cgColor)
-            context.setLineWidth(1.3)
+            context.setFillColor(UIColor.label.withAlphaComponent(0.26).cgColor)
             for point in mapped {
-                let radius: CGFloat = 3
+                let radius: CGFloat = 1.5
+                context.fillEllipse(
+                    in: CGRect(
+                        x: point.x - radius,
+                        y: point.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            }
+
+            UIColor.systemBlue.setStroke()
+            let path = splinePath(mapped)
+            path.lineWidth = 2.3
+            path.stroke()
+        }
+    }
+
+    private func drawSmoothFitPanel(
+        original: [CGPoint],
+        smoothed: [CGPoint],
+        in panel: CGRect,
+        context: CGContext
+    ) {
+        withPanelClip(panel, context: context) {
+            let mappedOriginal = original.map { displayPoint($0, in: panel) }
+            let mappedSmoothed = smoothed.map { displayPoint($0, in: panel) }
+
+            context.setStrokeColor(UIColor.systemOrange.withAlphaComponent(0.25).cgColor)
+            context.setLineWidth(0.7)
+            for (before, after) in zip(mappedOriginal, mappedSmoothed) {
+                context.move(to: before)
+                context.addLine(to: after)
+            }
+            context.strokePath()
+
+            context.setStrokeColor(UIColor.systemTeal.withAlphaComponent(0.6).cgColor)
+            context.setLineWidth(1)
+            for point in mappedOriginal {
+                let radius: CGFloat = 2.2
                 context.strokeEllipse(
                     in: CGRect(
                         x: point.x - radius,
@@ -453,28 +539,24 @@ private final class GeometryComparisonCanvasView: UIView {
                     )
                 )
             }
-        }
-    }
 
-    private func drawCurvePanel(
-        raw: [CGPoint],
-        resampled: [CGPoint],
-        in panel: CGRect,
-        context: CGContext
-    ) {
-        withPanelClip(panel, context: context) {
-            let mappedRaw = raw.map { displayPoint($0, in: panel) }
-            let mappedResampled = resampled.map { displayPoint($0, in: panel) }
-
-            UIColor.systemBlue.setStroke()
-            let rawPath = splinePath(mappedRaw)
-            rawPath.lineWidth = 2.2
-            rawPath.stroke()
+            context.setFillColor(UIColor.systemPink.withAlphaComponent(0.75).cgColor)
+            for point in mappedSmoothed {
+                let radius: CGFloat = 1.6
+                context.fillEllipse(
+                    in: CGRect(
+                        x: point.x - radius,
+                        y: point.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            }
 
             UIColor.systemPurple.setStroke()
-            let resampledPath = splinePath(mappedResampled)
-            resampledPath.lineWidth = 2.2
-            resampledPath.stroke()
+            let path = splinePath(mappedSmoothed)
+            path.lineWidth = 2.5
+            path.stroke()
         }
     }
 
@@ -545,8 +627,7 @@ private final class GeometryComparisonCanvasView: UIView {
     }
 
     /// Interpolating Catmull-Rom spline converted into cubic Bezier segments.
-    /// The exact same curve builder is used for both inputs so this comparison changes only
-    /// the distribution of points, not the curve algorithm.
+    /// This passes through every supplied point.
     private func splinePath(_ input: [CGPoint]) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = input.first else { return path }
@@ -577,7 +658,7 @@ private final class GeometryComparisonCanvasView: UIView {
         return path
     }
 
-    /// Converts time-spaced Pencil samples into approximately equal arc-length samples.
+    /// Equalizes spatial density before the 5-point smoothing experiment.
     /// Every generated point stays on an already observed raw polyline segment.
     private func spatiallyResampled(_ input: [CGPoint], spacing: CGFloat) -> [CGPoint] {
         guard input.count > 1, spacing > 0 else { return input }
@@ -612,6 +693,45 @@ private final class GeometryComparisonCanvasView: UIView {
            let lastOutput = result.last,
            distance(lastOutput, final) > 0.5 {
             result.append(final)
+        }
+
+        return result
+    }
+
+    /// First smoothing experiment. Each interior point is replaced by a weighted local average
+    /// of at most five neighbors using weights 1-2-3-2-1. The first and last point stay fixed.
+    /// Unlike interpolation, the resulting curve is therefore allowed to miss the original samples.
+    private func fivePointSmoothed(_ input: [CGPoint]) -> [CGPoint] {
+        guard input.count >= 3 else { return input }
+        let kernel: [CGFloat] = [1, 2, 3, 2, 1]
+        var result: [CGPoint] = []
+        result.reserveCapacity(input.count)
+
+        for index in input.indices {
+            if index == input.startIndex || index == input.index(before: input.endIndex) {
+                result.append(input[index])
+                continue
+            }
+
+            var weightedX: CGFloat = 0
+            var weightedY: CGFloat = 0
+            var totalWeight: CGFloat = 0
+
+            for offset in -2...2 {
+                let candidate = index + offset
+                guard input.indices.contains(candidate) else { continue }
+                let weight = kernel[offset + 2]
+                weightedX += input[candidate].x * weight
+                weightedY += input[candidate].y * weight
+                totalWeight += weight
+            }
+
+            result.append(
+                CGPoint(
+                    x: weightedX / totalWeight,
+                    y: weightedY / totalWeight
+                )
+            )
         }
 
         return result
