@@ -35,7 +35,6 @@ final class DrawingNavigationController: UINavigationController, UINavigationCon
     }
 
     private var contentSwipeGestureRecognizer: UIGestureRecognizer? {
-        // iOS 26 uses a separate full-width swipe recognizer for navigation transitions.
         view.gestureRecognizers?.first { $0.name == "UINavigationController.contentSwipe" }
     }
 }
@@ -174,7 +173,7 @@ final class GeometryLabViewController: UIViewController {
         explanation.font = .systemFont(ofSize: 13)
         explanation.textColor = .secondaryLabel
         explanation.numberOfLines = 0
-        explanation.text = "第三格现在模拟实时写字：绿色一旦提交就冻结；橙色尾部仍会随新点修正；Look-ahead 会暂缓最新 0/1/2 个几何点再决定方向。抬笔后全部提交。"
+        explanation.text = "前三格保留采样→平滑→实时 Bézier。第四格把同一条 Bézier 中心线展开成固定 12 pt 的封闭矢量笔迹；暂时不接压感、速度或纹理。"
 
         summary.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         summary.textColor = .secondaryLabel
@@ -303,19 +302,18 @@ private final class GeometryComparisonCanvasView: UIView {
     }
 
     private let resampleSpacing: CGFloat = 3
-    private let panelGap: CGFloat = 10
+    private let vectorStrokeWidth: CGFloat = 12
+    private let panelGap: CGFloat = 8
     private let panelInset: CGFloat = 8
     private let panelTitleHeight: CGFloat = 28
     private let activeTailSourcePoints = 14
     private let commitChunkSourcePoints = 8
 
-    /// Raw geometry is stored in local coordinates of the first panel's drawable area.
     private var points: [CGPoint] = []
     private var moveBatchCount = 0
     private var moveSampleCount = 0
     private var acceptingStroke = false
 
-    /// Realtime fit state. committedSegments never changes while a stroke continues.
     private var committedSegments: [GeometryBezierSegment] = []
     private var activeSegments: [GeometryBezierSegment] = []
     private var activeAnchors: [CGPoint] = []
@@ -452,8 +450,6 @@ private final class GeometryComparisonCanvasView: UIView {
         return (resampled, fivePointSmoothed(resampled))
     }
 
-    /// Streaming experiment: only the orange tail is refit. Older chunks are converted into
-    /// cubic Bezier segments and appended to committedSegments, then never touched again.
     private func updateRealtimeFit(forceFlush: Bool) {
         let processed = processedInputs()
         latestSmoothed = processed.smoothed
@@ -529,7 +525,7 @@ private final class GeometryComparisonCanvasView: UIView {
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         let panels = panelRects()
-        guard panels.count == 3 else { return }
+        guard panels.count == 4 else { return }
 
         drawPanelBackground(
             panels[0],
@@ -546,6 +542,11 @@ private final class GeometryComparisonCanvasView: UIView {
             title: String(format: "3  REALTIME BEZIER · ε %.1f", fitTolerance),
             subtitle: "绿 = committed · 橙 = active tail · 灰 = waiting"
         )
+        drawPanelBackground(
+            panels[3],
+            title: "4  VECTOR STROKE OUTLINE",
+            subtitle: String(format: "固定 %.0f pt · 黑 = 笔迹 · 蓝 = 中心线", vectorStrokeWidth)
+        )
 
         guard !points.isEmpty else {
             drawEmptyHint(in: panels[0])
@@ -561,14 +562,15 @@ private final class GeometryComparisonCanvasView: UIView {
             context: context
         )
         drawRealtimePanel(in: panels[2], context: context)
+        drawVectorStrokePanel(in: panels[3], context: context)
     }
 
     private func panelRects() -> [CGRect] {
-        let usableHeight = max(0, bounds.height - panelGap * 2)
-        let height = usableHeight / 3
+        let usableHeight = max(0, bounds.height - panelGap * 3)
+        let height = usableHeight / 4
         guard height > 0 else { return [] }
 
-        return (0..<3).map { index in
+        return (0..<4).map { index in
             CGRect(
                 x: 0,
                 y: CGFloat(index) * (height + panelGap),
@@ -735,6 +737,140 @@ private final class GeometryComparisonCanvasView: UIView {
         }
     }
 
+    private func drawVectorStrokePanel(in panel: CGRect, context: CGContext) {
+        withPanelClip(panel, context: context) {
+            let segments = committedSegments + activeSegments
+            let centerline = sampledCenterline(from: segments, samplesPerSegment: 12)
+            guard !centerline.isEmpty else { return }
+
+            let mappedCenterline = centerline.map { displayPoint($0, in: panel) }
+            let outline = vectorOutlinePath(
+                centerline: mappedCenterline,
+                width: vectorStrokeWidth
+            )
+
+            UIColor.label.withAlphaComponent(0.86).setFill()
+            outline.fill()
+
+            if let first = mappedCenterline.first,
+               let last = mappedCenterline.last {
+                context.setFillColor(UIColor.label.withAlphaComponent(0.86).cgColor)
+                let radius = vectorStrokeWidth / 2
+                context.fillEllipse(
+                    in: CGRect(
+                        x: first.x - radius,
+                        y: first.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+                context.fillEllipse(
+                    in: CGRect(
+                        x: last.x - radius,
+                        y: last.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                )
+            }
+
+            UIColor.systemBlue.withAlphaComponent(0.95).setStroke()
+            let centerPath = polylinePath(mappedCenterline)
+            centerPath.lineWidth = 1.1
+            centerPath.stroke()
+        }
+    }
+
+    private func sampledCenterline(
+        from segments: [GeometryBezierSegment],
+        samplesPerSegment: Int
+    ) -> [CGPoint] {
+        guard samplesPerSegment > 0 else { return [] }
+        var result: [CGPoint] = []
+        result.reserveCapacity(segments.count * samplesPerSegment + 1)
+
+        for (segmentIndex, segment) in segments.enumerated() {
+            for step in 0...samplesPerSegment {
+                if segmentIndex > 0 && step == 0 {
+                    continue
+                }
+                let t = CGFloat(step) / CGFloat(samplesPerSegment)
+                result.append(cubicPoint(on: segment, t: t))
+            }
+        }
+
+        return result
+    }
+
+    private func cubicPoint(on segment: GeometryBezierSegment, t: CGFloat) -> CGPoint {
+        let oneMinusT = 1 - t
+        let a = oneMinusT * oneMinusT * oneMinusT
+        let b = 3 * oneMinusT * oneMinusT * t
+        let c = 3 * oneMinusT * t * t
+        let d = t * t * t
+
+        return CGPoint(
+            x: a * segment.start.x
+                + b * segment.control1.x
+                + c * segment.control2.x
+                + d * segment.end.x,
+            y: a * segment.start.y
+                + b * segment.control1.y
+                + c * segment.control2.y
+                + d * segment.end.y
+        )
+    }
+
+    private func vectorOutlinePath(centerline: [CGPoint], width: CGFloat) -> UIBezierPath {
+        let path = UIBezierPath()
+        guard centerline.count > 1, width > 0 else { return path }
+
+        let halfWidth = width / 2
+        var left: [CGPoint] = []
+        var right: [CGPoint] = []
+        left.reserveCapacity(centerline.count)
+        right.reserveCapacity(centerline.count)
+
+        for index in centerline.indices {
+            let previous = centerline[index == centerline.startIndex ? index : index - 1]
+            let next = centerline[index == centerline.index(before: centerline.endIndex) ? index : index + 1]
+            let dx = next.x - previous.x
+            let dy = next.y - previous.y
+            let length = hypot(dx, dy)
+
+            let normal: CGVector
+            if length > 0.0001 {
+                normal = CGVector(dx: -dy / length, dy: dx / length)
+            } else {
+                normal = .zero
+            }
+
+            left.append(
+                CGPoint(
+                    x: centerline[index].x + normal.dx * halfWidth,
+                    y: centerline[index].y + normal.dy * halfWidth
+                )
+            )
+            right.append(
+                CGPoint(
+                    x: centerline[index].x - normal.dx * halfWidth,
+                    y: centerline[index].y - normal.dy * halfWidth
+                )
+            )
+        }
+
+        guard let firstLeft = left.first else { return path }
+        path.move(to: firstLeft)
+        for point in left.dropFirst() {
+            path.addLine(to: point)
+        }
+        for point in right.reversed() {
+            path.addLine(to: point)
+        }
+        path.close()
+        return path
+    }
+
     private func drawBezierSegments(
         _ segments: [GeometryBezierSegment],
         in panel: CGRect,
@@ -841,7 +977,6 @@ private final class GeometryComparisonCanvasView: UIView {
         return path
     }
 
-    /// Interpolating Catmull-Rom spline used only as the visible result of the smoothing stage.
     private func splinePath(_ input: [CGPoint]) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = input.first else { return path }
@@ -910,7 +1045,6 @@ private final class GeometryComparisonCanvasView: UIView {
         return result
     }
 
-    /// Local low-pass experiment. The first and last point stay fixed.
     private func fivePointSmoothed(_ input: [CGPoint]) -> [CGPoint] {
         guard input.count >= 3 else { return input }
         let kernel: [CGFloat] = [1, 2, 3, 2, 1]
@@ -947,7 +1081,6 @@ private final class GeometryComparisonCanvasView: UIView {
         return result
     }
 
-    /// Ramer-Douglas-Peucker simplification: lower the degrees of freedom before Bezier rebuild.
     private func simplifiedAnchors(_ input: [CGPoint], tolerance: CGFloat) -> [CGPoint] {
         guard input.count > 2 else { return input }
 
